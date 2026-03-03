@@ -43,9 +43,12 @@
 
 #include <stddef.h>
 #include <string.h>
+#include "uart.h"
 
 #include "usb_endpoint.h"
+
 #include "usb_api_sweep.h"
+#include <math.h>
 
 #define USB_TRANSFER_SIZE 0x4000
 
@@ -76,13 +79,17 @@ usb_request_status_t usb_vendor_request_set_baseband_filter_bandwidth(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_baseband_filter_bandwidth SETUP index=%u value=%u\n",
+			endpoint->setup.index,
+			endpoint->setup.value);
 		const uint32_t bandwidth =
 			(endpoint->setup.index << 16) | endpoint->setup.value;
 		radio_error_t result = radio_set_filter(
 			&radio,
 			RADIO_CHANNEL0,
 			RADIO_FILTER_BASEBAND,
-			(radio_filter_t){.hz = bandwidth});
+			(radio_filter_t) {.hz = bandwidth});
 		if (result == RADIO_OK) {
 			radio_filter_t real = radio_get_filter(
 				&radio,
@@ -103,6 +110,10 @@ usb_request_status_t usb_vendor_request_set_freq(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_freq SETUP freq_mhz=%u freq_hz=%u\n",
+			set_freq_params.freq_mhz,
+			set_freq_params.freq_hz);
 		usb_transfer_schedule_block(
 			endpoint->out,
 			&set_freq_params,
@@ -111,13 +122,17 @@ usb_request_status_t usb_vendor_request_set_freq(
 			NULL);
 		return USB_REQUEST_STATUS_OK;
 	} else if (stage == USB_TRANSFER_STAGE_DATA) {
+		uart_printf(
+			"usb_vendor_request_set_freq DATA freq_mhz=%u freq_hz=%u\n",
+			set_freq_params.freq_mhz,
+			set_freq_params.freq_hz);
 		const uint64_t freq =
 			set_freq_params.freq_mhz * 1000000ULL + set_freq_params.freq_hz;
 		radio_error_t result = radio_set_frequency(
 			&radio,
 			RADIO_CHANNEL0,
 			RADIO_FREQUENCY_RF,
-			(radio_frequency_t){.hz = freq});
+			(radio_frequency_t) {.hz = freq});
 		if (result == RADIO_OK) {
 			usb_transfer_schedule_ack(endpoint->in);
 			return USB_REQUEST_STATUS_OK;
@@ -133,6 +148,11 @@ usb_request_status_t usb_vendor_request_set_freq_explicit(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_freq_explicit SETUP if_freq_hz=%llu lo_freq_hz=%llu path=%u\n",
+			explicit_params.if_freq_hz,
+			explicit_params.lo_freq_hz,
+			explicit_params.path);
 		usb_transfer_schedule_block(
 			endpoint->out,
 			&explicit_params,
@@ -141,14 +161,18 @@ usb_request_status_t usb_vendor_request_set_freq_explicit(
 			NULL);
 		return USB_REQUEST_STATUS_OK;
 	} else if (stage == USB_TRANSFER_STAGE_DATA) {
+		uart_printf(
+			"usb_vendor_request_set_freq_explicit DATA if_freq_hz=%llu lo_freq_hz=%llu path=%u\n",
+			explicit_params.if_freq_hz,
+			explicit_params.lo_freq_hz,
+			explicit_params.path);
 		radio_error_t result = radio_set_frequency(
 			&radio,
 			RADIO_CHANNEL0,
 			RADIO_FREQUENCY_RF,
-			(radio_frequency_t){
-				.if_hz = explicit_params.if_freq_hz,
-				.lo_hz = explicit_params.lo_freq_hz,
-				.path = explicit_params.path});
+			(radio_frequency_t) {.if_hz = explicit_params.if_freq_hz,
+					     .lo_hz = explicit_params.lo_freq_hz,
+					     .path = explicit_params.path});
 		if (result == RADIO_OK) {
 			usb_transfer_schedule_ack(endpoint->in);
 			return USB_REQUEST_STATUS_OK;
@@ -164,6 +188,10 @@ usb_request_status_t usb_vendor_request_set_sample_rate_frac(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_sample_rate_frac SETUP freq_hz=%u divider=%u\n",
+			set_sample_r_params.freq_hz,
+			set_sample_r_params.divider);
 		usb_transfer_schedule_block(
 			endpoint->out,
 			&set_sample_r_params,
@@ -176,7 +204,7 @@ usb_request_status_t usb_vendor_request_set_sample_rate_frac(
 			&radio,
 			RADIO_CHANNEL0,
 			RADIO_SAMPLE_RATE_CLOCKGEN,
-			(radio_sample_rate_t){
+			(radio_sample_rate_t) {
 				.num = set_sample_r_params.freq_hz * 2,
 				.div = set_sample_r_params.divider,
 			});
@@ -198,6 +226,9 @@ usb_request_status_t usb_vendor_request_set_amp_enable(
 	radio_gain_t on = {.enable = true};
 
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_amp_enable SETUP value=%u\n",
+			endpoint->setup.value);
 		switch (endpoint->setup.value) {
 		case 0:
 			radio_set_gain(&radio, RADIO_CHANNEL0, RADIO_GAIN_RF_AMP, off);
@@ -220,6 +251,9 @@ usb_request_status_t usb_vendor_request_set_lna_gain(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_lna_gain SETUP index=%u\n",
+			endpoint->setup.index);
 		radio_gain_t gain = {.db = endpoint->setup.index};
 		uint8_t value =
 			radio_set_gain(&radio, RADIO_CHANNEL0, RADIO_GAIN_RX_LNA, gain);
@@ -244,6 +278,9 @@ usb_request_status_t usb_vendor_request_set_vga_gain(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_vga_gain SETUP index=%u\n",
+			endpoint->setup.index);
 		radio_gain_t gain = {.db = endpoint->setup.index};
 		uint8_t value =
 			radio_set_gain(&radio, RADIO_CHANNEL0, RADIO_GAIN_RX_VGA, gain);
@@ -268,6 +305,9 @@ usb_request_status_t usb_vendor_request_set_txvga_gain(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_txvga_gain SETUP index=%u\n",
+			endpoint->setup.index);
 		radio_gain_t gain = {.db = endpoint->setup.index};
 		uint8_t value =
 			radio_set_gain(&radio, RADIO_CHANNEL0, RADIO_GAIN_TX_VGA, gain);
@@ -295,6 +335,9 @@ usb_request_status_t usb_vendor_request_set_antenna_enable(
 	radio_antenna_t on = {.enable = true};
 
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_antenna_enable SETUP value=%u\n",
+			endpoint->setup.value);
 		switch (endpoint->setup.value) {
 		case 0:
 			radio_set_antenna(
@@ -384,6 +427,9 @@ usb_request_status_t usb_vendor_request_set_transceiver_mode(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_transceiver_mode SETUP value=%u\n",
+			endpoint->setup.value);
 		switch (endpoint->setup.value) {
 		case TRANSCEIVER_MODE_OFF:
 		case TRANSCEIVER_MODE_RX:
@@ -450,6 +496,95 @@ void transceiver_bulk_transfer_complete(void* user_data, unsigned int bytes_tran
 	m0_state.m4_count += bytes_transferred;
 }
 
+float _rx_lut[0xff];
+
+void init_rx_lookup_table(void)
+{
+	for (unsigned int i = 0; i <= 0xff; i++) {
+		_rx_lut[i] = ((float) ((int8_t) i)) * (1.0f / 128.0f);
+	}
+	uart_printf("RX Lookup Table initialised\n");
+}
+
+void rx_signal_process(uint32_t usb_count)
+{
+#define N_BITS_PER_UNIT   8
+#define N_SAMPLES_PER_BIT 1000
+#define GLITCH_TOLERANCE  50
+	static uint32_t sample_count = 0;
+	static bool clean_bit = 0; // currently accepted
+	static uint32_t glitch_count = 0;
+	static bool bit_buffer[1024];
+	static uint32_t bit_buffer_index = 0;
+
+	for (uint32_t i = 0; i < USB_TRANSFER_SIZE; i += 2) {
+		const uint8_t* const buffer =
+			&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
+		const float I = _rx_lut[buffer[i]];
+		const float Q = _rx_lut[buffer[i + 1]];
+		// uart_printf("I/Q Data: I=%f Q=%f\n", I, Q);
+
+		const float mag = sqrt(I * I + Q * Q);
+		const bool raw_bit = ({ // bits received (with noise)
+			// threshold logic from GNU radio
+			static bool thres_last_bit = 0; // < static variable
+			const float thres_low = 0.1;
+			const float thres_high = 0.5;
+			if (mag < thres_low) {
+				thres_last_bit = 0;
+			} else if (mag > thres_high) {
+				thres_last_bit = 1;
+			}
+			thres_last_bit;
+		});
+
+		// glitch filtering (tolerate some noise but flip bit if it exceeds the threshold)
+		if (raw_bit != clean_bit) {
+			glitch_count++;
+			if (glitch_count >= GLITCH_TOLERANCE) {
+				clean_bit = raw_bit; // flip bit
+				glitch_count = 0;
+				// sample count realignment
+				sample_count = GLITCH_TOLERANCE;
+			} else {
+				// uart_printf(
+				// 	"Glitch: raw_bit=%d clean_bit=%d glitch_count=%u\n",
+				// 	raw_bit,
+				// 	clean_bit,
+				// 	glitch_count);
+			}
+		} else {
+			glitch_count = 0;
+		}
+
+		// centre sampling
+		sample_count++;
+		if (sample_count == N_SAMPLES_PER_BIT / 2) {
+			bit_buffer[bit_buffer_index++] = clean_bit;
+			if (bit_buffer_index >= N_BITS_PER_UNIT) {
+				// Process a full unit of bits
+				uint8_t byte = 0;
+				// uart_printf("got byte: ");
+				for (int i = 0; i < N_BITS_PER_UNIT; i++) {
+					// uart_printf(
+					// 	"bit_buffer[%d] = %d\n",
+					// 	i,
+					// 	bit_buffer[i]);
+					byte |= (bit_buffer[i] << (7 - i));
+					uart_printf("%d", bit_buffer[i]);
+				}
+				// uart_printf("Sending byte: 0x%02x\n", byte);
+				uart_printf("\n");
+				bit_buffer_index = 0;
+			}
+		}
+		// reset
+		if (sample_count >= N_SAMPLES_PER_BIT) {
+			sample_count = 0;
+		}
+	}
+}
+
 void rx_mode(uint32_t seq)
 {
 	uint32_t usb_count = 0;
@@ -460,6 +595,9 @@ void rx_mode(uint32_t seq)
 
 	while (transceiver_request.seq == seq) {
 		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
+			// BEGIN signal process
+			// rx_signal_process(usb_count);
+			// END   signal process
 			usb_transfer_schedule_block(
 				&usb_endpoint_bulk_in,
 				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],

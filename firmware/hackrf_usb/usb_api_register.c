@@ -34,12 +34,14 @@
 #include <stdint.h>
 
 #include <hackrf_core.h>
+#include "uart.h"
 
 usb_request_status_t usb_vendor_request_write_max283x(
 	usb_endpoint_t* const endpoint,
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+        uart_printf("usb_vendor_request_write_max283x SETUP index=%u value=%u", endpoint->setup.index, endpoint->setup.value);
 #ifndef PRALINE
 		if (endpoint->setup.index < MAX2837_NUM_REGS) {
 			if (endpoint->setup.value < MAX2837_DATA_REGS_MAX_VALUE) {
@@ -74,6 +76,7 @@ usb_request_status_t usb_vendor_request_read_max283x(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+        uart_printf("usb_vendor_request_read_max283x SETUP index=%u", endpoint->setup.index);
 #ifndef PRALINE
 		if (endpoint->setup.index < MAX2837_NUM_REGS) {
 			const uint16_t value =
@@ -116,6 +119,7 @@ usb_request_status_t usb_vendor_request_write_si5351c(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+        uart_printf("usb_vendor_request_write_si5351c SETUP index=%u value=%u", endpoint->setup.index, endpoint->setup.value);
 		if (endpoint->setup.index < 256) {
 			if (endpoint->setup.value < 256) {
 				si5351c_write_single(
@@ -137,6 +141,7 @@ usb_request_status_t usb_vendor_request_read_si5351c(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+        uart_printf("usb_vendor_request_read_si5351c SETUP index=%u", endpoint->setup.index);
 		if (endpoint->setup.index < 256) {
 			const uint8_t value =
 				si5351c_read_single(&clock_gen, endpoint->setup.index);
@@ -162,6 +167,7 @@ usb_request_status_t usb_vendor_request_write_rffc5071(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+        uart_printf("usb_vendor_request_write_rffc5071 SETUP index=%u value=%u", endpoint->setup.index, endpoint->setup.value);
 		if (endpoint->setup.index < RFFC5071_NUM_REGS) {
 			rffc5071_reg_write(
 				&mixer,
@@ -182,6 +188,7 @@ usb_request_status_t usb_vendor_request_read_rffc5071(
 {
 	uint16_t value;
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+        uart_printf("usb_vendor_request_read_rffc5071 SETUP index=%u", endpoint->setup.index);
 		if (endpoint->setup.index < RFFC5071_NUM_REGS) {
 			value = rffc5071_reg_read(&mixer, endpoint->setup.index);
 			endpoint->buffer[0] = value & 0xff;

@@ -82,4 +82,6 @@ void rx_mode(uint32_t seq);
 void tx_mode(uint32_t seq);
 void off_mode(uint32_t seq);
 
+void init_rx_lookup_table(void);
+
 #endif /*__USB_API_TRANSCEIVER_H__*/

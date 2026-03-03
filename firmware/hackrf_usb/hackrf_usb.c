@@ -366,6 +366,8 @@ int main(void)
 		clkin_detect_init();
 	}
 
+	init_rx_lookup_table();
+
 	while (true) {
 		transceiver_request_t request;
 
