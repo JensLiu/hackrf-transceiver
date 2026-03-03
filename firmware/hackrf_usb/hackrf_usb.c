@@ -63,6 +63,7 @@
 #include "fpga.h"
 #include "selftest.h"
 #include "delay.h"
+#include "uart.h"
 
 extern uint32_t __m0_start__;
 extern uint32_t __m0_end__;
@@ -264,6 +265,7 @@ int main(void)
 
 	detect_hardware_platform();
 	pin_shutdown();
+	uart_pin_setup(); // < UART
 #ifndef RAD1O
 	clock_gen_shutdown();
 #endif
@@ -294,6 +296,7 @@ int main(void)
 	clock_gen_init();
 #endif
 	cpu_clock_init();
+	uart_setup(); // < UART
 
 	/* Wake the M0 */
 	ipc_halt_m0();
@@ -346,6 +349,8 @@ int main(void)
 #ifdef PRALINE
 	fpga_if_xcvr_selftest();
 #endif
+
+    uart_printf("HackRF Started");
 
 	bool operacake_allow_gpio;
 	if (hackrf_ui()->operacake_gpio_compatible()) {
