@@ -27,6 +27,7 @@
 #include "operacake_sctimer.h"
 
 #include <libopencm3/cm3/vector.h>
+#include <libopencm3/cm3/scs.h>
 #include "usb_bulk_buffer.h"
 #include "usb_api_m0_state.h"
 
@@ -79,12 +80,9 @@ usb_request_status_t usb_vendor_request_set_baseband_filter_bandwidth(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
-		uart_printf(
-			"usb_vendor_request_set_baseband_filter_bandwidth SETUP index=%u value=%u\n",
-			endpoint->setup.index,
-			endpoint->setup.value);
 		const uint32_t bandwidth =
 			(endpoint->setup.index << 16) | endpoint->setup.value;
+		uart_printf("radio_set_filter(bandwidth=%u)\n", bandwidth);
 		radio_error_t result = radio_set_filter(
 			&radio,
 			RADIO_CHANNEL0,
@@ -95,6 +93,7 @@ usb_request_status_t usb_vendor_request_set_baseband_filter_bandwidth(
 				&radio,
 				RADIO_CHANNEL0,
 				RADIO_FILTER_BASEBAND);
+			uart_printf("set_filter_bw(%u) real=%u\n", bandwidth, real.hz);
 			hackrf_ui()->set_filter_bw(real.hz);
 			usb_transfer_schedule_ack(endpoint->in);
 			return USB_REQUEST_STATUS_OK;
@@ -110,10 +109,6 @@ usb_request_status_t usb_vendor_request_set_freq(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
-		uart_printf(
-			"usb_vendor_request_set_freq SETUP freq_mhz=%u freq_hz=%u\n",
-			set_freq_params.freq_mhz,
-			set_freq_params.freq_hz);
 		usb_transfer_schedule_block(
 			endpoint->out,
 			&set_freq_params,
@@ -251,14 +246,19 @@ usb_request_status_t usb_vendor_request_set_lna_gain(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
-		uart_printf(
-			"usb_vendor_request_set_lna_gain SETUP index=%u\n",
-			endpoint->setup.index);
 		radio_gain_t gain = {.db = endpoint->setup.index};
 		uint8_t value =
 			radio_set_gain(&radio, RADIO_CHANNEL0, RADIO_GAIN_RX_LNA, gain);
 		endpoint->buffer[0] = value;
+		uart_printf(
+			"radio_set_gain(RADIO_GAIN_RX_LNA, %u) -> value=%u\n",
+			gain.db,
+			value);
 		if (value) {
+			uart_printf(
+				"set_lna_gain(%u) radio_set_gain(value=%u)\n",
+				endpoint->setup.index,
+				value);
 			hackrf_ui()->set_bb_lna_gain(endpoint->setup.index);
 		}
 		usb_transfer_schedule_block(
@@ -278,14 +278,19 @@ usb_request_status_t usb_vendor_request_set_vga_gain(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
-		uart_printf(
-			"usb_vendor_request_set_vga_gain SETUP index=%u\n",
-			endpoint->setup.index);
 		radio_gain_t gain = {.db = endpoint->setup.index};
 		uint8_t value =
 			radio_set_gain(&radio, RADIO_CHANNEL0, RADIO_GAIN_RX_VGA, gain);
 		endpoint->buffer[0] = value;
+		uart_printf(
+			"radio_set_gain(RADIO_GAIN_RX_VGA, %u) -> value=%u\n",
+			gain.db,
+			value);
 		if (value) {
+			uart_printf(
+				"set_vga_gain(%u) radio_set_gain(value=%u)\n",
+				endpoint->setup.index,
+				value);
 			hackrf_ui()->set_bb_vga_gain(endpoint->setup.index);
 		}
 		usb_transfer_schedule_block(
@@ -305,14 +310,19 @@ usb_request_status_t usb_vendor_request_set_txvga_gain(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
-		uart_printf(
-			"usb_vendor_request_set_txvga_gain SETUP index=%u\n",
-			endpoint->setup.index);
 		radio_gain_t gain = {.db = endpoint->setup.index};
 		uint8_t value =
 			radio_set_gain(&radio, RADIO_CHANNEL0, RADIO_GAIN_TX_VGA, gain);
 		endpoint->buffer[0] = value;
+		uart_printf(
+			"radio_set_gain(RADIO_GAIN_TX_VGA, %u) -> value=%u\n",
+			gain.db,
+			value);
 		if (value) {
+			uart_printf(
+				"set_txvga_gain(%u) radio_set_gain(value=%u)\n",
+				endpoint->setup.index,
+				value);
 			hackrf_ui()->set_bb_tx_vga_gain(endpoint->setup.index);
 		}
 		usb_transfer_schedule_block(
@@ -496,21 +506,88 @@ void transceiver_bulk_transfer_complete(void* user_data, unsigned int bytes_tran
 	m0_state.m4_count += bytes_transferred;
 }
 
-float _rx_lut[0xff];
+float _rx_lut[0x100];
 
 void init_rx_lookup_table(void)
 {
-	for (unsigned int i = 0; i <= 0xff; i++) {
+	for (unsigned int i = 0; i < 0x100; i++) {
 		_rx_lut[i] = ((float) ((int8_t) i)) * (1.0f / 128.0f);
 	}
 	uart_printf("RX Lookup Table initialised\n");
 }
 
-void rx_signal_process(uint32_t usb_count)
+#define FAST_FILTER
+// #define LOW_ERROR
+#ifdef LOW_ERROR
+void rx_signal_process(const uint32_t usb_count)
 {
-#define N_BITS_PER_UNIT   8
-#define N_SAMPLES_PER_BIT 1000
-#define GLITCH_TOLERANCE  50
+	#define BIT_PACKET_SIZE 4
+	#define BIT_SAMPLES     1000
+	// const uint32_t BIT_SAMPLES = 0.1 * SAMPLE_RATE;
+	// Constants matching the transmitter
+	static uint32_t sample_count = 0;
+	static uint64_t mag2_sum = 0; // Sum of magnitude squared
+	static bool current_bit = false;
+
+	// Output buffer (one byte per bit: 0 or 1)
+	static uint8_t bit_buffer[USB_TRANSFER_SIZE];
+	static uint32_t bit_buffer_index = 0;
+	static uint8_t tx_buffer[USB_TRANSFER_SIZE];
+
+	static const uint32_t MAG2_THRESHOLD = 2500; // Adjust as needed
+
+	// === REP3 ECC state ===
+	static uint32_t rep3_sum = 0;   // how many '1's seen in the current trio
+	static uint32_t rep3_count = 0; // how many bits collected in current trio
+
+	const uint8_t* buffer = &usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
+
+	for (uint32_t i = 0; i < USB_TRANSFER_SIZE; i += 2) {
+		const int32_t I = (int8_t) buffer[i];
+		const int32_t Q = (int8_t) buffer[i + 1];
+
+		uint32_t mag2 = (uint32_t) (I * I + Q * Q);
+		mag2_sum += mag2;
+		sample_count++;
+
+		if (sample_count >= BIT_SAMPLES) {
+			uint32_t mag2_avg = (uint32_t) (mag2_sum / BIT_SAMPLES);
+			current_bit = (mag2_avg > MAG2_THRESHOLD);
+
+			// ---- REP3 ECC majority vote ----
+			rep3_sum += current_bit ? 1u : 0u;
+			rep3_count += 1u;
+
+			if (rep3_count == 3u) {
+				uint8_t corrected_bit = (rep3_sum >= 2u) ? 1u : 0u;
+
+				// Emit ONE corrected bit for each trio
+				bit_buffer[bit_buffer_index++] = corrected_bit;
+				uart_printf("%d", corrected_bit);
+				// Packetization unchanged
+				if (bit_buffer_index >= BIT_PACKET_SIZE) {
+					bit_buffer_index = 0;
+				}
+
+				// reset trio
+				rep3_sum = 0;
+				rep3_count = 0;
+			}
+			// ---------------------------------
+
+			// Reset window accumulators
+			sample_count = 0;
+			mag2_sum = 0;
+		}
+	}
+}
+#elif defined GLITCH
+void rx_signal_process(const uint32_t usb_count)
+{
+	#define N_BITS_PER_UNIT   8
+	#define N_SAMPLES_PER_BIT 1000
+	#define GLITCH_TOLERANCE  50
+
 	static uint32_t sample_count = 0;
 	static bool clean_bit = 0; // currently accepted
 	static uint32_t glitch_count = 0;
@@ -520,25 +597,29 @@ void rx_signal_process(uint32_t usb_count)
 	for (uint32_t i = 0; i < USB_TRANSFER_SIZE; i += 2) {
 		const uint8_t* const buffer =
 			&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
-		const float I = _rx_lut[buffer[i]];
-		const float Q = _rx_lut[buffer[i + 1]];
+		// const float I = _rx_lut[buffer[i]];
+		// const float Q = _rx_lut[buffer[i + 1]];
+		// const float mag_sauqred = sqrt(I * I + Q * Q);
+		const uint32_t I = buffer[i];
+		const uint32_t Q = buffer[i + 1];
+		const uint32_t mag_squared = I * I + Q * Q;
 		// uart_printf("I/Q Data: I=%f Q=%f\n", I, Q);
-
-		const float mag = sqrt(I * I + Q * Q);
 		const bool raw_bit = ({ // bits received (with noise)
 			// threshold logic from GNU radio
 			static bool thres_last_bit = 0; // < static variable
-			const float thres_low = 0.1;
-			const float thres_high = 0.5;
-			if (mag < thres_low) {
+			// const float thres_low_squared = 0.25 * 0.25;
+			// const float thres_high_squared = 0.5 * 0.5;
+
+			if (mag_squared < thres_low_squared) {
 				thres_last_bit = 0;
-			} else if (mag > thres_high) {
+			} else if (mag_squared > thres_high_squared) {
 				thres_last_bit = 1;
 			}
 			thres_last_bit;
 		});
+		// uart_printf("%d", raw_bit);
 
-		// glitch filtering (tolerate some noise but flip bit if it exceeds the threshold)
+		// // glitch filtering (tolerate some noise but flip bit if it exceeds the threshold)
 		if (raw_bit != clean_bit) {
 			glitch_count++;
 			if (glitch_count >= GLITCH_TOLERANCE) {
@@ -557,7 +638,7 @@ void rx_signal_process(uint32_t usb_count)
 			glitch_count = 0;
 		}
 
-		// centre sampling
+		// // centre sampling
 		sample_count++;
 		if (sample_count == N_SAMPLES_PER_BIT / 2) {
 			bit_buffer[bit_buffer_index++] = clean_bit;
@@ -565,16 +646,16 @@ void rx_signal_process(uint32_t usb_count)
 				// Process a full unit of bits
 				uint8_t byte = 0;
 				// uart_printf("got byte: ");
-				for (int i = 0; i < N_BITS_PER_UNIT; i++) {
-					// uart_printf(
-					// 	"bit_buffer[%d] = %d\n",
-					// 	i,
-					// 	bit_buffer[i]);
-					byte |= (bit_buffer[i] << (7 - i));
-					uart_printf("%d", bit_buffer[i]);
-				}
+				// for (int i = 0; i < N_BITS_PER_UNIT; i++) {
+				// uart_printf(
+				// 	"bit_buffer[%d] = %d\n",
+				// 	i,
+				// 	bit_buffer[i]);
+				// byte |= (bit_buffer[i] << (7 - i));
+				// uart_printf("%d", bit_buffer[i]);
+				// }
 				// uart_printf("Sending byte: 0x%02x\n", byte);
-				uart_printf("\n");
+				// uart_printf("\n");
 				bit_buffer_index = 0;
 			}
 		}
@@ -584,6 +665,159 @@ void rx_signal_process(uint32_t usb_count)
 		}
 	}
 }
+#elif defined FAST_FILTER
+void rx_signal_process(const uint32_t usb_count)
+{
+	// filtering parameter (run some sample payload to get the result)
+	static const uint32_t SAMPLES_PER_BIT = 3000; // Adjust based on interpolation
+	static const uint32_t GLITCH_THRESHOLD = (uint32_t) (0.45 * SAMPLES_PER_BIT);
+	// internal state
+	static int32_t smoothed_mag = 0; // Our filtered signal
+	static int32_t max_env = 0;
+	static int32_t min_env = 0;
+	static int32_t dynamic_threshold = 0;
+	static bool previous_raw_bit = -1; // -1 means "uninitialized"
+	static uint32_t logical_state = 0; // the last accepted bit state
+	static uint32_t logical_run_length =
+		0; // how long we've been in the current logical state
+	static uint32_t raw_run_length = 0; // how long we've been in
+
+	const uint8_t* buffer = &usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
+
+	// used for printing
+	static uint32_t bit_count = 0;
+
+	for (uint32_t i = 0; i < USB_TRANSFER_SIZE; i += 2) {
+		const int32_t I = (int8_t) buffer[i];
+		const int32_t Q = (int8_t) buffer[i + 1];
+		const uint32_t mag_squared = (uint32_t) (I * I + Q * Q);
+		// 2. THE MAGIC: Fast Integer Low-Pass Filter (Leaky Integrator)
+		// We add the new sample and subtract a fraction of the accumulated total.
+		// The bitshift ">> 6" divides by 64. You can tweak this depending on noise.
+		// Larger shift (e.g., >> 8) = smoother, but reacts slower to the 1000-sample edges.
+		smoothed_mag = smoothed_mag - (smoothed_mag >> 6) + mag_squared;
+
+		// 3. Track Peaks and Valleys using the SMOOTHED signal
+		if (smoothed_mag > max_env) {
+			max_env = smoothed_mag;
+		} else {
+			// Slow decay (adjust shift based on how fast the signal fades)
+			max_env -= (max_env >> 16);
+			// uart_printf("(%d, %d)\n", max_env, min_env);
+			// uart_printf("dynamic_threshold = %d\n", dynamic_threshold);
+		}
+
+		if (smoothed_mag < min_env) {
+			min_env = smoothed_mag;
+		} else {
+			// min_env += 1;
+			// slow rise, mirrors max_env decay
+			min_env += (min_env >> 16) + 1; // +1 prevents getting stuck at 0
+			// uart_printf("(max, min) = (%d, %d)\n", max_env, min_env);
+			// uart_printf("dynamic_threshold = %d\n", dynamic_threshold);
+		}
+
+		// 4. Set threshold exactly halfway
+		dynamic_threshold = (max_env + min_env) >> 1;
+
+		// 5. Decode the stream using the smoothed data
+		// if (smoothed_mag > dynamic_threshold) {
+		// 	// We are currently inside a '1' bit
+		// 	uart_printf("1");
+		// } else {
+		// 	// We are currently inside a '0' bit
+		// 	uart_printf("0");
+		// }
+		const bool raw_bit = (smoothed_mag > dynamic_threshold) ? 1 : 0;
+
+		// ---------------------------------------------------------
+		// 6. STATE MACHINE: Glitch Removal & Bit Decoding
+		// ---------------------------------------------------------
+
+		// Initialize on the very first sample
+		if (previous_raw_bit == -1) {
+			previous_raw_bit = raw_bit;
+			logical_state = raw_bit;
+		}
+
+		if (raw_bit == previous_raw_bit) {
+			// The signal hasn't changed, keep counting
+			raw_run_length++;
+		} else {
+			// The raw bit changed state! Let's evaluate the block of identical bits we just finished.
+
+			if (raw_run_length < GLITCH_THRESHOLD) {
+				// GLITCH DETECTED: It was too short to be a real bit.
+				// Add its time to the ongoing logical state, but DO NOT change the logical state.
+				logical_run_length += raw_run_length;
+			} else {
+				// VALID PULSE DETECTED:
+				if (previous_raw_bit == logical_state) {
+					// It matches our currently accepted state (happens if a previous glitch was ignored)
+					logical_run_length += raw_run_length;
+				} else {
+					// IT IS A NEW VALID LOGICAL STATE!
+
+					// 1. Calculate how many bits the *previous* state lasted.
+					// Adding (SAMPLES_PER_BIT / 2) before dividing is a fast integer way to round to the nearest whole number.
+					const uint32_t num_bits =
+						(logical_run_length +
+						 (SAMPLES_PER_BIT / 2)) /
+						SAMPLES_PER_BIT;
+
+					// 2. Output those bits
+					for (uint32_t b = 0; b < num_bits; b++) {
+						// In a real application, you might shift these into a byte buffer
+						// instead of printing them one by one.
+						// uart_printf("%d", logical_state);
+						// bit_count++;
+						// if (bit_count % 8 == 0) {
+						// uart_printf(" "); // separate bytes for readability
+						// }
+					}
+					// uart_printf(
+					// 	"(%d, %u bits) ",
+					// 	logical_state,
+					// 	num_bits);
+
+					// 3. Start tracking the new state
+					logical_state = previous_raw_bit;
+					logical_run_length = raw_run_length;
+				}
+			}
+
+			// Reset the raw tracker for the new bit state we just entered
+			previous_raw_bit = raw_bit;
+			raw_run_length = 1;
+		}
+	}
+}
+#endif
+
+uint32_t time_init()
+{
+	// === Timing instrumentation ===
+	// Enable DWT cycle counter (CYCCNT)
+	// DEMCR: 0xE000EDFC, bit 24 (TRCENA)
+	// DWT_CTRL: 0xE0001000, bit 0 (CYCCNTENA)
+	volatile uint32_t* demcr = (volatile uint32_t*) 0xE000EDFC;
+	volatile uint32_t* dwt_ctrl = (volatile uint32_t*) 0xE0001000;
+	volatile uint32_t* dwt_cyccnt = (volatile uint32_t*) 0xE0001004;
+
+	*demcr |= 0x01000000;    // Enable trace (TRCENA)
+	*dwt_ctrl |= 0x00000001; // Enable cycle counter
+}
+
+uint32_t get_time()
+{
+	volatile uint32_t* dwt_cyccnt = (volatile uint32_t*) 0xE0001004;
+	return *dwt_cyccnt;
+}
+
+// #define PROFILE_RX_SIGNAL_PROCESS
+// #define USE_SIGNAL_PROCESSING
+// #define USE_DELAY
+#define USE_USB_TRANSFER
 
 void rx_mode(uint32_t seq)
 {
@@ -592,18 +826,40 @@ void rx_mode(uint32_t seq)
 	transceiver_startup(TRANSCEIVER_MODE_RX);
 
 	baseband_streaming_enable(&sgpio_config);
+#ifdef PROFILE_RX_SIGNAL_PROCESS
+	time_init();
+#endif
 
 	while (transceiver_request.seq == seq) {
 		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
 			// BEGIN signal process
-			// rx_signal_process(usb_count);
-			// END   signal process
+#ifdef USE_SIGNAL_PROCESSING
+	#ifdef PROFILE_RX_SIGNAL_PROCESS
+			const uint32_t start_time = get_time();
+	#endif
+			rx_signal_process(usb_count);
+	#ifdef PROFILE_RX_SIGNAL_PROCESS
+			const uint32_t elapsed_cycles = get_time() - start_time;
+			const float elapsed_us = (float) elapsed_cycles / 204.0f;
+			uart_printf(
+				"rx_signal_process() took %.3f us (%u cycles)\n",
+				elapsed_us,
+				elapsed_cycles);
+	#endif
+#endif
+#ifdef USE_DELAY
+			delay_1us(1406);
+#endif
+#ifdef USE_USB_TRANSFER
 			usb_transfer_schedule_block(
 				&usb_endpoint_bulk_in,
 				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
 				USB_TRANSFER_SIZE,
 				transceiver_bulk_transfer_complete,
 				NULL);
+#else
+			m0_state.m4_count += USB_TRANSFER_SIZE;
+#endif
 			usb_count += USB_TRANSFER_SIZE;
 		}
 	}
