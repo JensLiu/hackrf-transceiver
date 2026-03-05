@@ -366,42 +366,41 @@ int main(void)
 		clkin_detect_init();
 	}
 
-	init_rx_lookup_table();
-
 	while (true) {
-		transceiver_request_t request;
+		rx_mode(0);
+// 		transceiver_request_t request;
 
-		// Briefly disable USB interrupt so that we can
-		// atomically retrieve both the transceiver mode
-		// and the mode change sequence number. They are
-		// changed together by request_transceiver_mode()
-		// called from the USB ISR.
+// 		// Briefly disable USB interrupt so that we can
+// 		// atomically retrieve both the transceiver mode
+// 		// and the mode change sequence number. They are
+// 		// changed together by request_transceiver_mode()
+// 		// called from the USB ISR.
 
-		nvic_disable_irq(NVIC_USB0_IRQ);
-		request = transceiver_request;
-		nvic_enable_irq(NVIC_USB0_IRQ);
+// 		nvic_disable_irq(NVIC_USB0_IRQ);
+// 		request = transceiver_request;
+// 		nvic_enable_irq(NVIC_USB0_IRQ);
 
-		switch (request.mode) {
-		case TRANSCEIVER_MODE_OFF:
-			off_mode(request.seq);
-			break;
-		case TRANSCEIVER_MODE_RX:
-			rx_mode(request.seq);
-			break;
-		case TRANSCEIVER_MODE_TX:
-			tx_mode(request.seq);
-			break;
-		case TRANSCEIVER_MODE_RX_SWEEP:
-			sweep_mode(request.seq);
-			break;
-#ifndef PRALINE
-		case TRANSCEIVER_MODE_CPLD_UPDATE:
-			cpld_update();
-			break;
-#endif
-		default:
-			break;
-		}
+// 		switch (request.mode) {
+// 		case TRANSCEIVER_MODE_OFF:
+// 			off_mode(request.seq);
+// 			break;
+// 		case TRANSCEIVER_MODE_RX:
+// 			rx_mode(request.seq);
+// 			break;
+// 		case TRANSCEIVER_MODE_TX:
+// 			tx_mode(request.seq);
+// 			break;
+// 		case TRANSCEIVER_MODE_RX_SWEEP:
+// 			sweep_mode(request.seq);
+// 			break;
+// #ifndef PRALINE
+// 		case TRANSCEIVER_MODE_CPLD_UPDATE:
+// 			cpld_update();
+// 			break;
+// #endif
+// 		default:
+// 			break;
+// 		}
 	}
 
 	return 0;
