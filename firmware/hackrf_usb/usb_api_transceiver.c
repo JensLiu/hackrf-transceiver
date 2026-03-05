@@ -76,7 +76,7 @@ extern void tx_autostart_init(void);
 #define FREQ              915000000 // 915 MHz
 
 const uint32_t TX_BIT_SAMPLES = 10000000;
-const uint32_t RX_BIT_SAMPLES = TX_BIT_SAMPLES * 2;
+const uint32_t RX_BIT_SAMPLES = TX_BIT_SAMPLES;
 
 typedef struct {
 	uint32_t freq_mhz;
@@ -789,12 +789,6 @@ void rx_mode(uint32_t seq)
 						bit_buffer_index = 0;
 					}
 
-					if (current_bit) {
-						led_on(LED3);
-					} else {
-						led_off(LED3);
-					}
-
 					sample_count = 0;
 					mag2_sum = 0;
 				}
@@ -802,7 +796,6 @@ void rx_mode(uint32_t seq)
 
 			usb_count += USB_TRANSFER_SIZE;
 			m0_state.m4_count += USB_TRANSFER_SIZE;
-			m0_state.m0_count += USB_TRANSFER_SIZE;
 		}
 	}
 
