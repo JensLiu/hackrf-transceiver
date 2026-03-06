@@ -112,6 +112,7 @@ void sweep_bulk_transfer_complete(void* user_data, unsigned int bytes_transferre
 	m0_state.m4_count += (THROWAWAY_BUFFERS + 1) * 0x4000;
 }
 
+#include "uart.h"
 void sweep_mode(uint32_t seq)
 {
 	// Sweep mode is implemented using timed M0 operations, as follows:
@@ -136,6 +137,8 @@ void sweep_mode(uint32_t seq)
 	//    m0_count limit by 16K and sets the next mode to WAIT.
 	//
 	// 7. Process repeats from step 1.
+
+	uart_printf("sweep_mode\n");
 
 	unsigned int blocks_queued = 0;
 	unsigned int phase = 0;

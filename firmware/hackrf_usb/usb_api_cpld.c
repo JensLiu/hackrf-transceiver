@@ -59,8 +59,11 @@ static void refill_cpld_buffer(void)
 	while (cpld_wait) {}
 }
 
+#include "uart.h"
 void cpld_update(void)
 {
+
+	uart_printf("clpd_update\n");
 	int error;
 
 	usb_queue_flush_endpoint(&usb_endpoint_bulk_in);

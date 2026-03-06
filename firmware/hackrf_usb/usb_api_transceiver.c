@@ -27,6 +27,7 @@
 #include "operacake_sctimer.h"
 
 #include <libopencm3/cm3/vector.h>
+#include <libopencm3/lpc43xx/sgpio.h>
 #include "usb_bulk_buffer.h"
 #include "usb_api_m0_state.h"
 
@@ -397,7 +398,20 @@ void transceiver_shutdown(void)
 
 void transceiver_startup(const transceiver_mode_t mode)
 {
-	radio_switch_mode(&radio, RADIO_CHANNEL0, mode);
+	radio_error_t result = radio_switch_mode(&radio, RADIO_CHANNEL0, mode);
+	if (result != RADIO_OK) {
+		radio_sample_rate_t sample_rate =
+			radio_get_sample_rate(&radio, RADIO_CHANNEL0, RADIO_SAMPLE_RATE_CLOCKGEN);
+		uart_printf(
+			"transceiver_startup abort: mode=%u radio_switch_mode=%d sample_rate(num=%lu div=%lu hz=%lu)\n",
+			(unsigned int) mode,
+			(int) result,
+			(unsigned long) sample_rate.num,
+			(unsigned long) sample_rate.div,
+			(unsigned long) sample_rate.hz);
+		return;
+	}
+
 	hackrf_ui()->set_transceiver_mode(mode);
 
 	switch (mode) {
@@ -587,17 +601,84 @@ void rx_signal_process(uint32_t usb_count)
 
 void rx_mode(uint32_t seq)
 {
+	// Auto-start RX mode on boot
+	// Configure radio with default settings
+	// radio_set_tuning(
+	// 	&radio,
+	// 	RADIO_CHANNEL0,
+	// 	(radio_tuning_t) {.mhz = 1000, .hz = 0} // 1000 MHz
+	// );
+
+	// radio_set_sample_rate(
+	// 	&radio,
+	// 	RADIO_CHANNEL0,
+	// 	(radio_sample_rate_t) {.hz = 20000000, .divider = 1} // 20 MHz
+	// );
+
+	// radio_set_filter(
+	// 	&radio,
+	// 	RADIO_CHANNEL0,
+	// 	RADIO_FILTER_BASEBAND,
+	// 	(radio_filter_t) {.hz = 1750000} // 1.75 MHz bandwidth
+	// );
+
+	// radio_set_lna_gain(&radio, RADIO_CHANNEL0, 40);     // LNA gain
+	// radio_set_vga_gain(&radio, RADIO_CHANNEL0, 30);     // VGA gain
+	// radio_set_amp_enable(&radio, RADIO_CHANNEL0, true); // Enable amp
+	// radio_set_antenna_enable(&radio, RADIO_CHANNEL0, false); // Antenna port
+
+	// Start RX mode
+	transceiver_request.mode = TRANSCEIVER_MODE_RX;
+	transceiver_request.seq++;
+
 	uint32_t usb_count = 0;
+	uint32_t last_m0_count = 0;
+	uint32_t stalled_loops = 0;
 
 	transceiver_startup(TRANSCEIVER_MODE_RX);
 
 	baseband_streaming_enable(&sgpio_config);
 
-	while (transceiver_request.seq == seq) {
+	uart_printf("rx_mode\n");
+
+	uart_printf(
+		"m0_state.requested_mode: %d, m0_state.active_mode: %d, m0_state.m0_count: %u, m0_state.m4_count: %u\n",
+		m0_state.requested_mode,
+		m0_state.active_mode,
+		m0_state.m0_count,
+		m0_state.m4_count);
+	uart_printf(
+		"rx startup: SGPIO_ENABLE_1=0x%08lx SGPIO_STATUS_1=0x%08lx SGPIO_CTRL_ENABLE=0x%08lx m0_error=%lu\n",
+		(unsigned long) SGPIO_ENABLE_1,
+		(unsigned long) SGPIO_STATUS_1,
+		(unsigned long) SGPIO_CTRL_ENABLE,
+		(unsigned long) m0_state.error);
+
+	while (1) {
+		if (m0_state.m0_count == last_m0_count) {
+			stalled_loops++;
+			if ((stalled_loops & 0xFFFFF) == 0) {
+				uart_printf(
+					"rx stalled: m0_count=%lu m4_count=%lu req=%lu act=%lu err=%lu SGPIO_ENABLE_1=0x%08lx SGPIO_STATUS_1=0x%08lx SGPIO_CTRL_ENABLE=0x%08lx\n",
+					(unsigned long) m0_state.m0_count,
+					(unsigned long) m0_state.m4_count,
+					(unsigned long) m0_state.requested_mode,
+					(unsigned long) m0_state.active_mode,
+					(unsigned long) m0_state.error,
+					(unsigned long) SGPIO_ENABLE_1,
+					(unsigned long) SGPIO_STATUS_1,
+					(unsigned long) SGPIO_CTRL_ENABLE);
+			}
+		} else {
+			last_m0_count = m0_state.m0_count;
+			stalled_loops = 0;
+		}
+
 		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
 			// BEGIN signal process
 			// rx_signal_process(usb_count);
 			// END   signal process
+			uart_printf("Hello, World!\n");
 			usb_transfer_schedule_block(
 				&usb_endpoint_bulk_in,
 				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
@@ -605,6 +686,9 @@ void rx_mode(uint32_t seq)
 				transceiver_bulk_transfer_complete,
 				NULL);
 			usb_count += USB_TRANSFER_SIZE;
+			m0_state.m4_count += USB_TRANSFER_SIZE;
+		} else {
+			uart_printf("stalled");
 		}
 	}
 
@@ -649,6 +733,7 @@ void tx_mode(uint32_t seq)
 
 void off_mode(uint32_t seq)
 {
+	uart_printf("off_mode");
 	hackrf_ui()->set_transceiver_mode(TRANSCEIVER_MODE_OFF);
 
 	while (transceiver_request.seq == seq) {}

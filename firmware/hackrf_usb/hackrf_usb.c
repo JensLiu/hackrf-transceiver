@@ -158,6 +158,90 @@ static usb_request_handler_fn vendor_request_handler[] = {
 static const uint32_t vendor_request_handler_count =
 	sizeof(vendor_request_handler) / sizeof(vendor_request_handler[0]);
 
+static void standalone_rx_autostart(void)
+{
+	radio_error_t result;
+
+	result = radio_set_sample_rate(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_SAMPLE_RATE_CLOCKGEN,
+		(radio_sample_rate_t) {.num = 20000000, .div = 1});
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: sample_rate result=%d\n", result);
+		return;
+	}
+
+	result = radio_set_filter(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_FILTER_BASEBAND,
+		(radio_filter_t) {.hz = 1750000});
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: filter result=%d\n", result);
+		return;
+	}
+
+	result = radio_set_frequency(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_FREQUENCY_RF,
+		(radio_frequency_t) {.hz = 1000000000ULL});
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: frequency result=%d\n", result);
+		return;
+	}
+
+	result = radio_set_gain(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_GAIN_RX_LNA,
+		(radio_gain_t) {.db = 16});
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: lna gain result=%d\n", result);
+		return;
+	}
+
+	result = radio_set_gain(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_GAIN_RX_VGA,
+		(radio_gain_t) {.db = 20});
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: vga gain result=%d\n", result);
+		return;
+	}
+
+	result = radio_set_gain(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_GAIN_RF_AMP,
+		(radio_gain_t) {.enable = false});
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: amp result=%d\n", result);
+		return;
+	}
+
+	result = radio_set_antenna(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_ANTENNA_BIAS_TEE,
+		(radio_antenna_t) {.enable = false});
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: antenna result=%d\n", result);
+		return;
+	}
+
+	result = radio_set_trigger_enable(&radio, RADIO_CHANNEL0, false);
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: trigger result=%d\n", result);
+		return;
+	}
+
+	request_transceiver_mode(TRANSCEIVER_MODE_RX);
+	uart_printf("standalone RX autostart requested\n");
+}
+
 usb_request_status_t usb_vendor_request(
 	usb_endpoint_t* const endpoint,
 	const usb_transfer_stage_t stage)
@@ -350,7 +434,7 @@ int main(void)
 	fpga_if_xcvr_selftest();
 #endif
 
-    uart_printf("HackRF Started");
+	uart_printf("HackRF Started");
 
 	bool operacake_allow_gpio;
 	if (hackrf_ui()->operacake_gpio_compatible()) {
@@ -376,7 +460,11 @@ int main(void)
 		// and the mode change sequence number. They are
 		// changed together by request_transceiver_mode()
 		// called from the USB ISR.
-
+#define RX_STANDALONE
+#ifdef RX_STANDALONE
+		standalone_rx_autostart();
+		rx_mode(0);
+#else
 		nvic_disable_irq(NVIC_USB0_IRQ);
 		request = transceiver_request;
 		nvic_enable_irq(NVIC_USB0_IRQ);
@@ -400,8 +488,9 @@ int main(void)
 			break;
 #endif
 		default:
-			break;
+			rx_mode(request.seq);
 		}
+#endif
 	}
 
 	return 0;
