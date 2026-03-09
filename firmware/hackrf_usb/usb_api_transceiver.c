@@ -70,10 +70,13 @@ extern void tx_autostart_init(void);
 	#define M_PI 3.14159265358979323846
 #endif
 
-#define USB_TRANSFER_SIZE 256
-#define SAMPLE_RATE       10000000  // 10 Msps sample rate for better quality
-#define SINE_FREQ         200000    // 200 kHz sine wave
-#define FREQ              915000000 // 915 MHz
+#define USB_TRANSFER_SIZE  256
+#define SAMPLE_RATE        10000000 // 10 Msps sample rate for better quality
+#define BASEBAND_FILTER_BW 15000000 // 15 MHz baseband filter bandwidth for better quality
+#define SINE_FREQ          200000   // 200 kHz sine wave
+#define FREQ               915000000 // 915 MHz
+#define VGA_GAIN           40        // 40 dB
+#define LNA_GAIN           16        // 16 dB
 
 const uint32_t TX_BIT_SAMPLES = 10000000;
 const uint32_t RX_BIT_SAMPLES = TX_BIT_SAMPLES;
@@ -529,38 +532,27 @@ void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 	static uint32_t table_phase = 0;   // index into sine_table
 	static uint32_t sample_in_bit = 0; // 0…BIT_SAMPLES−1
 	static uint32_t bit_index = 0;     // 0…dynamic_pattern_len−1
-					   /*
-	// Check if we have a valid pattern
-	if (!dynamic_bit_pattern || dynamic_pattern_len == 0) {
-		// If no pattern is set, fill buffer with zeros
-		memset(buffer, 0, len);
-		return;
-	}
+	// static const uint8_t dynamic_bit_pattern[] = {1, 1, 1, 0, 1, 0, 1, 0};
+	// static const uint8_t dynamic_bit_pattern[] = {1, 0}; // Example pattern
+	const uint32_t dynamic_pattern_len =
+		sizeof(dynamic_bit_pattern) / sizeof(*dynamic_bit_pattern);
 
-	// If we've already sent the pattern once, fill with zeros
-	if (pattern_sent_once) {
-		memset(buffer, 0, len);
-		return;
-	}
-*/
-	static const uint8_t dynamic_bit_pattern[] = {1, 1, 1, 0, 1, 0, 1, 0};
-#define dynamic_pattern_len (sizeof(dynamic_bit_pattern) / sizeof(*dynamic_bit_pattern))
-
-	uint32_t total_samples = len / BYTES_PER_SAMPLE;
+	const uint32_t total_samples = len / BYTES_PER_SAMPLE;
 
 	for (uint32_t s = 0; s < total_samples; s++) {
-		uint32_t i = s * BYTES_PER_SAMPLE;
+		const uint32_t i = s * BYTES_PER_SAMPLE;
 		if (dynamic_bit_pattern[bit_index]) {
 			// — "1": sine output
-			uint32_t ti = table_phase % SINE_TABLE_SIZE;
+			const uint32_t ti = table_phase % SINE_TABLE_SIZE;
 			buffer[i] = sine_table[2 * ti];
 			buffer[i + 1] = sine_table[2 * ti + 1];
-			table_phase = (table_phase + phase_increment) % SINE_TABLE_SIZE;
 		} else {
 			// — "0": flat mid-scale
 			buffer[i] = MID_SCALE;
 			buffer[i + 1] = MID_SCALE;
 		}
+		// advance phase even when outputting "0" to maintain correct timing when we return to "1"
+		table_phase = (table_phase + phase_increment) % SINE_TABLE_SIZE;
 
 		// advance sample count; after TX_BIT_SAMPLES, move to next bit
 		if (++sample_in_bit >= TX_BIT_SAMPLES) {
@@ -716,16 +708,93 @@ void transceiver_bulk_transfer_complete(void* user_data, unsigned int bytes_tran
 
 #define BIT_PACKET_SIZE 4
 
+static void standalone_autostart(void)
+{
+	radio_error_t result;
+
+	result = radio_set_sample_rate(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_SAMPLE_RATE_CLOCKGEN,
+		(radio_sample_rate_t) {.num = SAMPLE_RATE, .div = 1});
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: sample_rate result=%d\n", result);
+		return;
+	}
+
+	result = radio_set_filter(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_FILTER_BASEBAND,
+		(radio_filter_t) {.hz = BASEBAND_FILTER_BW});
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: filter result=%d\n", result);
+		return;
+	}
+
+	result = radio_set_frequency(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_FREQUENCY_RF,
+		(radio_frequency_t) {.hz = 1000000000ULL});
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: frequency result=%d\n", result);
+		return;
+	}
+
+	result = radio_set_gain(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_GAIN_RX_LNA,
+		(radio_gain_t) {.db = LNA_GAIN});
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: lna gain result=%d\n", result);
+		return;
+	}
+
+	result = radio_set_gain(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_GAIN_RX_VGA,
+		(radio_gain_t) {.db = VGA_GAIN});
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: vga gain result=%d\n", result);
+		return;
+	}
+
+	result = radio_set_gain(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_GAIN_RF_AMP,
+		(radio_gain_t) {.enable = false});
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: amp result=%d\n", result);
+		return;
+	}
+
+	result = radio_set_antenna(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_ANTENNA_BIAS_TEE,
+		(radio_antenna_t) {.enable = false});
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: antenna result=%d\n", result);
+		return;
+	}
+
+	result = radio_set_trigger_enable(&radio, RADIO_CHANNEL0, false);
+	if (result != RADIO_OK) {
+		uart_printf("standalone RX setup failed: trigger result=%d\n", result);
+		return;
+	}
+
+	request_transceiver_mode(TRANSCEIVER_MODE_RX);
+	uart_printf("standalone RX autostart requested\n");
+}
+
 void rx_mode(uint32_t seq)
 {
-	sample_rate_frac_set(SAMPLE_RATE, 1);
-	// baseband_filter_bandwidth_set(15000000);
-	hackrf_ui()->set_filter_bw(15000000);
-	set_freq(FREQ);
-	max283x_set_lna_gain(&max283x, 40);
-	rf_path_set_lna(&rf_path, 1);
-	rf_path_set_antenna(&rf_path, 1);
-
+	standalone_autostart();
 	uint32_t usb_count = 0;
 	transceiver_startup(TRANSCEIVER_MODE_RX);
 	baseband_streaming_enable(&sgpio_config);
@@ -734,68 +803,40 @@ void rx_mode(uint32_t seq)
 	uint32_t sample_count = 0;
 	uint64_t mag2_sum = 0; // Sum of magnitude squared
 	bool current_bit = false;
-	uint8_t bit_buffer[USB_TRANSFER_SIZE]; // Buffer to store detected bits
-	uint32_t bit_buffer_index = 0;
-	uint8_t tx_buffer[USB_TRANSFER_SIZE]; // Separate buffer for USB transfers
 
 	uint32_t noise_floor = 0;
 	const uint32_t THRESHOLD_MARGIN = 500;
 
 	while (1) {
-		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
-			uint8_t* buffer =
-				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
+		uint8_t* buffer = &usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
+		for (uint32_t i = 0; i < USB_TRANSFER_SIZE; i += 2) {
+			int32_t I = (int8_t) buffer[i];
+			int32_t Q = (int8_t) buffer[i + 1];
+			// consume sample to avoid overflow
+			usb_count += 2;
+			m0_state.m4_count += 2;
 
-			for (uint32_t i = 0; i < USB_TRANSFER_SIZE; i += 2) {
-				int32_t I = (int8_t) buffer[i];
-				int32_t Q = (int8_t) buffer[i + 1];
+			uint32_t mag2 = I * I + Q * Q;
+			mag2_sum += mag2;
+			sample_count++;
 
-				uint32_t mag2 = I * I + Q * Q;
-				mag2_sum += mag2;
-				sample_count++;
+			if (sample_count >= RX_BIT_SAMPLES) {
+				uint32_t mag2_avg = mag2_sum / RX_BIT_SAMPLES;
 
-				if (sample_count >= RX_BIT_SAMPLES) {
-					uint32_t mag2_avg = mag2_sum / RX_BIT_SAMPLES;
+				// Update noise floor (slow moving average)
+				noise_floor = (noise_floor * 15 + mag2_avg) / 16;
 
-					// Update noise floor (slow moving average)
-					noise_floor = (noise_floor * 15 + mag2_avg) / 16;
+				// Adaptive threshold
+				uint32_t adaptive_threshold =
+					noise_floor + THRESHOLD_MARGIN;
 
-					// Adaptive threshold
-					uint32_t adaptive_threshold =
-						noise_floor + THRESHOLD_MARGIN;
+				current_bit = (mag2_avg > adaptive_threshold);
 
-					current_bit = (mag2_avg > adaptive_threshold);
+				uart_printf("%d", current_bit);
 
-					bit_buffer[bit_buffer_index++] =
-						current_bit ? 1 : 0;
-
-					if (bit_buffer_index >= BIT_PACKET_SIZE) {
-						memcpy(tx_buffer,
-						       bit_buffer,
-						       BIT_PACKET_SIZE);
-
-						usb_transfer_schedule_block(
-							&usb_endpoint_bulk_in,
-							tx_buffer,
-							BIT_PACKET_SIZE,
-							transceiver_bulk_transfer_complete,
-							NULL);
-
-						while (!usb_endpoint_bulk_in
-								.transfer_complete) {
-							__asm__("nop");
-						}
-
-						bit_buffer_index = 0;
-					}
-
-					sample_count = 0;
-					mag2_sum = 0;
-				}
+				sample_count = 0;
+				mag2_sum = 0;
 			}
-
-			usb_count += USB_TRANSFER_SIZE;
-			m0_state.m4_count += USB_TRANSFER_SIZE;
 		}
 	}
 
@@ -805,14 +846,7 @@ void rx_mode(uint32_t seq)
 void tx_mode(uint32_t seq)
 {
 	init_sine_table();
-	sample_rate_frac_set(SAMPLE_RATE, 1);    // 20 MS/s
-	// baseband_filter_bandwidth_set(15000000); // 15 MHz bandwidth
-    hackrf_ui()->set_filter_bw(15000000);
-	set_freq(FREQ);                          // Frequency 915 MHz
-	max283x_set_txvga_gain(&max283x, 47);    // Maximum TX gain
-	rf_path_set_lna(&rf_path, 1);            // Enable LNA
-	rf_path_set_antenna(&rf_path, 1);        // Select antenna path
-
+	standalone_autostart();
 	// Start transceiver once
 	transceiver_startup(TRANSCEIVER_MODE_TX);
 	baseband_streaming_enable(&sgpio_config);
