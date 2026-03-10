@@ -60,6 +60,200 @@
 #include <stdlib.h>
 #include "uart.h"
 
+
+// MAPPING FROM THE GR-OSMOSDR PROJECT
+void set_if_gain(const double gain)
+{
+	// TODO: find clip range
+	const uint32_t clip_gain = (uint32_t) gain;
+	if (RADIO_OK !=
+	    radio_set_gain(
+		    &radio,
+		    RADIO_CHANNEL0,
+		    RADIO_GAIN_RX_LNA,
+		    (radio_gain_t) {.db = gain})) {
+		uart_printf("standalone RX setup failed: IF gain\n");
+	}
+}
+
+void set_rf_gain(const double gain)
+{
+	const double clip_gain = (gain >= 14.0) ? 14.0 : 0.0;
+	const uint8_t value = (clip_gain == 14.0) ? 1 : 0;
+	if (RADIO_OK !=
+	    radio_set_gain(
+		    &radio,
+		    RADIO_CHANNEL0,
+		    RADIO_GAIN_RF_AMP,
+		    (radio_gain_t) {.enable = value})) {
+		uart_printf("standalone RX setup failed: RF Gain\n");
+	}
+}
+
+void set_bb_gain(const double gain)
+{
+	// TODO: find clip range
+	const uint32_t clip_gain = (uint32_t) gain;
+	if (RADIO_OK !=
+	    radio_set_gain(
+		    &radio,
+		    RADIO_CHANNEL0,
+		    RADIO_GAIN_RX_VGA,
+		    (radio_gain_t) {.db = VGA_GAIN})) {
+		uart_printf("standalone RX setup failed: BB Gain\n");
+	}
+}
+
+// FROM HACKRF HOST CODE
+typedef struct {
+	uint32_t bandwidth_hz;
+} max2837_ft_t;
+
+static const max2837_ft_t max2837_ft[] = {
+	{1750000},
+	{2500000},
+	{3500000},
+	{5000000},
+	{5500000},
+	{6000000},
+	{7000000},
+	{8000000},
+	{9000000},
+	{10000000},
+	{12000000},
+	{14000000},
+	{15000000},
+	{20000000},
+	{24000000},
+	{28000000},
+	{0}};
+
+uint32_t _hackrf_compute_baseband_filter_bw(const uint32_t bandwidth_hz)
+{
+	const max2837_ft_t* p = max2837_ft;
+	while (p->bandwidth_hz != 0) {
+		if (p->bandwidth_hz >= bandwidth_hz) {
+			break;
+		}
+		p++;
+	}
+
+	/* Round down (if no equal to first entry) and if > bandwidth_hz */
+	if (p != max2837_ft) {
+		if (p->bandwidth_hz > bandwidth_hz)
+			p--;
+	}
+
+	return p->bandwidth_hz;
+}
+
+void set_bandwidth(double bandwidth)
+{
+	// compute best default value depending on sample rate (auto filter)
+	const uint32_t bw = _hackrf_compute_baseband_filter_bw(bandwidth);
+	// NOTE:
+	// In the host: hackrf_set_baseband_filter_bandwidth
+	// 	result = libusb_control_transfer(
+	//		device->usb_device,
+	//		LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR |
+	//			LIBUSB_RECIPIENT_DEVICE,
+	//		HACKRF_VENDOR_REQUEST_BASEBAND_FILTER_BANDWIDTH_SET,
+	//		bandwidth_hz & 0xffff,
+	//		bandwidth_hz >> 16,
+	//		NULL,
+	//		0,
+	//		0);
+	// In the Firmware: usb_vendor_request_set_baseband_filter_bandwidth
+	// 		const uint32_t bandwidth = (endpoint->setup.index << 16) | endpoint->setup.value;
+	if (!baseband_filter_bandwidth_set(bw)) {
+		uart_printf("standalone RX setup failed: baseband filter\n");
+	}
+}
+
+// FROM HACKRF HOST CODE
+int set_sample_rate(const double freq)
+{
+	const int MAX_N = 32;
+	uint32_t freq_hz, divider;
+	double freq_frac = 1.0 + freq - (int) freq;
+	uint64_t a, m;
+	int i, e;
+
+	union {
+		uint64_t u64;
+		double d;
+	} v;
+
+	v.d = freq;
+
+	e = (v.u64 >> 52) - 1023;
+
+	m = ((1ULL << 52) - 1);
+
+	v.d = freq_frac;
+	v.u64 &= m;
+
+	m &= ~((1 << (e + 4)) - 1);
+
+	a = 0;
+
+	for (i = 1; i < MAX_N; i++) {
+		a += v.u64;
+		if (!(a & m) || !(~a & m))
+			break;
+	}
+
+	if (i == MAX_N)
+		i = 1;
+
+	freq_hz = (uint32_t) (freq * i + 0.5);
+	divider = i;
+
+	// uart_printf("freq_hz: %d, divider: %d\n", freq_hz, divider); 
+	// NOTE:
+	//	 In the host: hackrf_set_sample_rate_manual(device, freq_hz, divider);
+	//	result = libusb_control_transfer(
+	//		device->usb_device,
+	//		LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR |
+	//			LIBUSB_RECIPIENT_DEVICE,
+	//		HACKRF_VENDOR_REQUEST_SAMPLE_RATE_SET,
+	//		0,
+	//		0,
+	//		(unsigned char*) &set_fracrate_params,
+	//		length,
+	//		0);
+	//	if (result < length) {
+	//		last_libusb_error = result;
+	//		return HACKRF_ERROR_LIBUSB;
+	//	} else {
+	//		return hackrf_set_baseband_filter_bandwidth(
+	//			device,
+	//			hackrf_compute_baseband_filter_bw(
+	//				(uint32_t) (0.75 * freq_hz / divider)));
+	//	}
+	// In the firmware: usb_vendor_request_set_sample_rate_frac
+	//		if (sample_rate_frac_set(
+	//		    set_sample_r_params.freq_hz * 2,
+	//		    set_sample_r_params.divider)) {
+	//			usb_transfer_schedule_ack(endpoint->in);
+	//			return USB_REQUEST_STATUS_OK;
+	//		}
+	sample_rate_frac_set(freq_hz * 2, divider);
+	const uint32_t bw = _hackrf_compute_baseband_filter_bw(0.75 * freq_hz / divider);
+		if (!baseband_filter_bandwidth_set(bw)) {
+		uart_printf("standalone RX setup failed: set sample rate and baseband filter\n");
+	}
+}
+
+void set_centre_frequency(double freq)
+{
+	#define APPLY_PPM_CORR(val, ppm) ((val) * (1.0 + (ppm) * 0.000001))
+	const double _freq_corr = 0;
+	const uint64_t corr_freq = (uint64_t)(APPLY_PPM_CORR( freq, _freq_corr ));
+	// hackrf_set_freq(freq_hz)
+	set_freq(corr_freq);
+}
+
 extern uint32_t __m0_start__;
 extern uint32_t __m0_end__;
 extern uint32_t __ram_m0_start__;
@@ -72,11 +266,11 @@ extern void tx_autostart_init(void);
 
 #define USB_TRANSFER_SIZE  256
 #define SAMPLE_RATE        10000000 // 10 Msps sample rate for better quality
-#define BASEBAND_FILTER_BW 15000000 // 15 MHz baseband filter bandwidth for better quality
-#define SINE_FREQ          200000   // 200 kHz sine wave
+#define BASEBAND_FILTER_BW 100000 // 100 kHz baseband filter bandwidth for better quality
+#define SINE_FREQ          200000 // 200 kHz sine wave
 #define FREQ               915000000 // 915 MHz
 #define VGA_GAIN           40        // 40 dB
-#define LNA_GAIN           16        // 16 dB
+#define LNA_GAIN           1         // 1 dB
 
 const uint32_t TX_BIT_SAMPLES = 10000000;
 const uint32_t RX_BIT_SAMPLES = TX_BIT_SAMPLES;
@@ -520,6 +714,56 @@ usb_request_status_t usb_vendor_request_set_bitstream_pattern(
 	return USB_REQUEST_STATUS_OK;
 }
 
+// void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
+// {
+// 	const uint32_t BYTES_PER_SAMPLE = 2; // I + Q
+// 	const uint8_t MID_SCALE = 0;         // unsigned zero level
+
+// 	// phase increment through the sine table
+// 	const uint32_t phase_increment = (SINE_FREQ * SINE_TABLE_SIZE) / SAMPLE_RATE;
+
+// 	// persistent state
+// 	static uint32_t table_phase = 0;   // index into sine_table
+// 	static uint32_t sample_in_bit = 0; // 0…BIT_SAMPLES−1
+// 	static uint32_t bit_index = 0;     // 0…dynamic_pattern_len−1
+// 	// static const uint8_t dynamic_bit_pattern[] = {1, 1, 1, 0, 1, 0, 1, 0};
+// 	static const uint8_t dynamic_bit_pattern[] =
+// 		{1, 0, 1, 0, 1, 0, 1, 0}; // Example pattern
+// 	const uint32_t dynamic_pattern_len =
+// 		sizeof(dynamic_bit_pattern) / sizeof(*dynamic_bit_pattern);
+
+// 	const uint32_t total_samples = len / BYTES_PER_SAMPLE;
+
+// 	for (uint32_t s = 0; s < total_samples; s++) {
+// 		const uint32_t i = s * BYTES_PER_SAMPLE;
+// 		if (dynamic_bit_pattern[bit_index]) {
+// 			// — "1": sine output
+// 			const uint32_t ti = table_phase % SINE_TABLE_SIZE;
+// 			buffer[i] = sine_table[2 * ti];
+// 			buffer[i + 1] = sine_table[2 * ti + 1];
+// 			// uart_printf("1");
+// 		} else {
+// 			// — "0": flat mid-scale
+// 			buffer[i] = MID_SCALE;
+// 			buffer[i + 1] = MID_SCALE;
+// 			// uart_printf("0");
+// 		}
+// 		// advance phase even when outputting "0" to maintain correct timing when we return to "1"
+// 		table_phase = (table_phase + phase_increment) % SINE_TABLE_SIZE;
+
+// 		// advance sample count; after TX_BIT_SAMPLES, move to next bit
+// 		if (++sample_in_bit >= TX_BIT_SAMPLES) {
+// 			sample_in_bit = 0;
+// 			bit_index = (bit_index + 1) % dynamic_pattern_len;
+// 			uart_printf("%d", dynamic_bit_pattern[bit_index]);
+// 			// If we've completed one full pattern, set the flag
+// 			if (bit_index == 0) {
+// 				pattern_sent_once = true;
+// 			}
+// 		}
+// 	}
+// }
+
 void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 {
 	const uint32_t BYTES_PER_SAMPLE = 2; // I + Q
@@ -532,29 +776,29 @@ void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 	static uint32_t table_phase = 0;   // index into sine_table
 	static uint32_t sample_in_bit = 0; // 0…BIT_SAMPLES−1
 	static uint32_t bit_index = 0;     // 0…dynamic_pattern_len−1
-	// static const uint8_t dynamic_bit_pattern[] = {1, 1, 1, 0, 1, 0, 1, 0};
-	// static const uint8_t dynamic_bit_pattern[] = {1, 0}; // Example pattern
-	const uint32_t dynamic_pattern_len =
-		sizeof(dynamic_bit_pattern) / sizeof(*dynamic_bit_pattern);
+	static const uint8_t dynamic_bit_pattern[] = {1, 1, 1, 0, 1, 0, 1, 0};
+#define dynamic_pattern_len (sizeof(dynamic_bit_pattern) / sizeof(*dynamic_bit_pattern))
 
-	const uint32_t total_samples = len / BYTES_PER_SAMPLE;
+	uint32_t total_samples = len / BYTES_PER_SAMPLE;
 
 	for (uint32_t s = 0; s < total_samples; s++) {
-		const uint32_t i = s * BYTES_PER_SAMPLE;
+		uint32_t i = s * BYTES_PER_SAMPLE;
 		if (dynamic_bit_pattern[bit_index]) {
 			// — "1": sine output
-			const uint32_t ti = table_phase % SINE_TABLE_SIZE;
+			uint32_t ti = table_phase % SINE_TABLE_SIZE;
 			buffer[i] = sine_table[2 * ti];
 			buffer[i + 1] = sine_table[2 * ti + 1];
+			// uart_printf("%d", buffer[i]);
 		} else {
 			// — "0": flat mid-scale
 			buffer[i] = MID_SCALE;
 			buffer[i + 1] = MID_SCALE;
+			// uart_printf("%d", buffer[i]);
 		}
-		// advance phase even when outputting "0" to maintain correct timing when we return to "1"
+
 		table_phase = (table_phase + phase_increment) % SINE_TABLE_SIZE;
 
-		// advance sample count; after TX_BIT_SAMPLES, move to next bit
+		// advance sample count; after BIT_SAMPLES, move to next bit
 		if (++sample_in_bit >= TX_BIT_SAMPLES) {
 			sample_in_bit = 0;
 			bit_index = (bit_index + 1) % dynamic_pattern_len;
@@ -846,7 +1090,19 @@ void rx_mode(uint32_t seq)
 void tx_mode(uint32_t seq)
 {
 	init_sine_table();
-	standalone_autostart();
+	sample_rate_frac_set(SAMPLE_RATE, 1); // 20 MS/s
+
+	// baseband_filter_bandwidth_set(15000000);   // 15 MHz bandwidth
+	radio_set_filter(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_FILTER_BASEBAND,
+		(radio_filter_t) {.hz = 15000000});
+	set_freq(FREQ);                       // Frequency 915 MHz
+	max283x_set_txvga_gain(&max283x, 47); // Maximum TX gain
+	rf_path_set_lna(&rf_path, 1);         // Enable LNA
+	rf_path_set_antenna(&rf_path, 1);     // Select antenna path
+
 	// Start transceiver once
 	transceiver_startup(TRANSCEIVER_MODE_TX);
 	baseband_streaming_enable(&sgpio_config);
