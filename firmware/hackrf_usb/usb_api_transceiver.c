@@ -60,7 +60,6 @@
 #include <stdlib.h>
 #include "uart.h"
 
-
 // MAPPING FROM THE GR-OSMOSDR PROJECT
 void set_if_gain(const double gain)
 {
@@ -71,7 +70,7 @@ void set_if_gain(const double gain)
 		    &radio,
 		    RADIO_CHANNEL0,
 		    RADIO_GAIN_RX_LNA,
-		    (radio_gain_t) {.db = gain})) {
+		    (radio_gain_t) {.db = clip_gain})) {
 		uart_printf("standalone RX setup failed: IF gain\n");
 	}
 }
@@ -99,7 +98,7 @@ void set_bb_gain(const double gain)
 		    &radio,
 		    RADIO_CHANNEL0,
 		    RADIO_GAIN_RX_VGA,
-		    (radio_gain_t) {.db = VGA_GAIN})) {
+		    (radio_gain_t) {.db = clip_gain})) {
 		uart_printf("standalone RX setup failed: BB Gain\n");
 	}
 }
@@ -147,7 +146,7 @@ uint32_t _hackrf_compute_baseband_filter_bw(const uint32_t bandwidth_hz)
 	return p->bandwidth_hz;
 }
 
-void set_bandwidth(double bandwidth)
+void set_baseband_filter_bandwidth(double bandwidth)
 {
 	// compute best default value depending on sample rate (auto filter)
 	const uint32_t bw = _hackrf_compute_baseband_filter_bw(bandwidth);
@@ -165,7 +164,11 @@ void set_bandwidth(double bandwidth)
 	//		0);
 	// In the Firmware: usb_vendor_request_set_baseband_filter_bandwidth
 	// 		const uint32_t bandwidth = (endpoint->setup.index << 16) | endpoint->setup.value;
-	if (!baseband_filter_bandwidth_set(bw)) {
+	if (RADIO_OK != radio_set_filter(
+		    &radio,
+		    RADIO_CHANNEL0,
+		    RADIO_FILTER_BASEBAND,
+		    (radio_filter_t) {.hz = bandwidth})) {
 		uart_printf("standalone RX setup failed: baseband filter\n");
 	}
 }
@@ -209,7 +212,7 @@ int set_sample_rate(const double freq)
 	freq_hz = (uint32_t) (freq * i + 0.5);
 	divider = i;
 
-	// uart_printf("freq_hz: %d, divider: %d\n", freq_hz, divider); 
+	// uart_printf("freq_hz: %d, divider: %d\n", freq_hz, divider);
 	// NOTE:
 	//	 In the host: hackrf_set_sample_rate_manual(device, freq_hz, divider);
 	//	result = libusb_control_transfer(
@@ -240,16 +243,21 @@ int set_sample_rate(const double freq)
 	//		}
 	sample_rate_frac_set(freq_hz * 2, divider);
 	const uint32_t bw = _hackrf_compute_baseband_filter_bw(0.75 * freq_hz / divider);
-		if (!baseband_filter_bandwidth_set(bw)) {
-		uart_printf("standalone RX setup failed: set sample rate and baseband filter\n");
+	if (RADIO_OK != radio_set_filter(
+		    &radio,
+		    RADIO_CHANNEL0,
+		    RADIO_FILTER_BASEBAND,
+		    (radio_filter_t) {.hz = bw})) {
+		uart_printf(
+			"standalone RX setup failed: set sample rate and baseband filter\n");
 	}
 }
 
 void set_centre_frequency(double freq)
 {
-	#define APPLY_PPM_CORR(val, ppm) ((val) * (1.0 + (ppm) * 0.000001))
+#define APPLY_PPM_CORR(val, ppm) ((val) * (1.0 + (ppm) * 0.000001))
 	const double _freq_corr = 0;
-	const uint64_t corr_freq = (uint64_t)(APPLY_PPM_CORR( freq, _freq_corr ));
+	const uint64_t corr_freq = (uint64_t) (APPLY_PPM_CORR(freq, _freq_corr));
 	// hackrf_set_freq(freq_hz)
 	set_freq(corr_freq);
 }
@@ -264,13 +272,16 @@ extern void tx_autostart_init(void);
 	#define M_PI 3.14159265358979323846
 #endif
 
-#define USB_TRANSFER_SIZE  256
-#define SAMPLE_RATE        10000000 // 10 Msps sample rate for better quality
-#define BASEBAND_FILTER_BW 100000 // 100 kHz baseband filter bandwidth for better quality
-#define SINE_FREQ          200000 // 200 kHz sine wave
-#define FREQ               915000000 // 915 MHz
-#define VGA_GAIN           40        // 40 dB
-#define LNA_GAIN           1         // 1 dB
+#define USB_TRANSFER_SIZE 256
+#define SINE_FREQ         200000 // 200 kHz sine wave
+
+#define SAMPLE_RATE        10000000  // 10 Msps sample rate
+#define BASEBAND_FILTER_BW 100000    // 100 kHz baseband filter bandwidth
+#define CENTRE_FREQ        915000000 // 915 MHz
+
+#define RF_GAIN 30 // 30 dB RF gain
+#define IF_GAIN 40 // 40 dB IF gain
+#define BB_GAIN 30 // 30 dB baseband gain
 
 const uint32_t TX_BIT_SAMPLES = 10000000;
 const uint32_t RX_BIT_SAMPLES = TX_BIT_SAMPLES;
@@ -954,81 +965,25 @@ void transceiver_bulk_transfer_complete(void* user_data, unsigned int bytes_tran
 
 static void standalone_autostart(void)
 {
-	radio_error_t result;
+	set_sample_rate(SAMPLE_RATE);
+	set_baseband_filter_bandwidth(BASEBAND_FILTER_BW);
+	set_centre_frequency(CENTRE_FREQ);
+	set_rf_gain(RF_GAIN);
+	set_if_gain(IF_GAIN);
+	set_bb_gain(BB_GAIN);
 
-	result = radio_set_sample_rate(
-		&radio,
-		RADIO_CHANNEL0,
-		RADIO_SAMPLE_RATE_CLOCKGEN,
-		(radio_sample_rate_t) {.num = SAMPLE_RATE, .div = 1});
-	if (result != RADIO_OK) {
-		uart_printf("standalone RX setup failed: sample_rate result=%d\n", result);
+	if (RADIO_OK !=
+	    radio_set_antenna(
+		    &radio,
+		    RADIO_CHANNEL0,
+		    RADIO_ANTENNA_BIAS_TEE,
+		    (radio_antenna_t) {.enable = false})) {
+		uart_printf("standalone RX setup failed: antenna");
 		return;
 	}
 
-	result = radio_set_filter(
-		&radio,
-		RADIO_CHANNEL0,
-		RADIO_FILTER_BASEBAND,
-		(radio_filter_t) {.hz = BASEBAND_FILTER_BW});
-	if (result != RADIO_OK) {
-		uart_printf("standalone RX setup failed: filter result=%d\n", result);
-		return;
-	}
-
-	result = radio_set_frequency(
-		&radio,
-		RADIO_CHANNEL0,
-		RADIO_FREQUENCY_RF,
-		(radio_frequency_t) {.hz = 1000000000ULL});
-	if (result != RADIO_OK) {
-		uart_printf("standalone RX setup failed: frequency result=%d\n", result);
-		return;
-	}
-
-	result = radio_set_gain(
-		&radio,
-		RADIO_CHANNEL0,
-		RADIO_GAIN_RX_LNA,
-		(radio_gain_t) {.db = LNA_GAIN});
-	if (result != RADIO_OK) {
-		uart_printf("standalone RX setup failed: lna gain result=%d\n", result);
-		return;
-	}
-
-	result = radio_set_gain(
-		&radio,
-		RADIO_CHANNEL0,
-		RADIO_GAIN_RX_VGA,
-		(radio_gain_t) {.db = VGA_GAIN});
-	if (result != RADIO_OK) {
-		uart_printf("standalone RX setup failed: vga gain result=%d\n", result);
-		return;
-	}
-
-	result = radio_set_gain(
-		&radio,
-		RADIO_CHANNEL0,
-		RADIO_GAIN_RF_AMP,
-		(radio_gain_t) {.enable = false});
-	if (result != RADIO_OK) {
-		uart_printf("standalone RX setup failed: amp result=%d\n", result);
-		return;
-	}
-
-	result = radio_set_antenna(
-		&radio,
-		RADIO_CHANNEL0,
-		RADIO_ANTENNA_BIAS_TEE,
-		(radio_antenna_t) {.enable = false});
-	if (result != RADIO_OK) {
-		uart_printf("standalone RX setup failed: antenna result=%d\n", result);
-		return;
-	}
-
-	result = radio_set_trigger_enable(&radio, RADIO_CHANNEL0, false);
-	if (result != RADIO_OK) {
-		uart_printf("standalone RX setup failed: trigger result=%d\n", result);
+	if (RADIO_OK != radio_set_trigger_enable(&radio, RADIO_CHANNEL0, false)) {
+		uart_printf("standalone RX setup failed: trigger");
 		return;
 	}
 
@@ -1098,7 +1053,7 @@ void tx_mode(uint32_t seq)
 		RADIO_CHANNEL0,
 		RADIO_FILTER_BASEBAND,
 		(radio_filter_t) {.hz = 15000000});
-	set_freq(FREQ);                       // Frequency 915 MHz
+	set_freq(CENTRE_FREQ);                // Frequency 915 MHz
 	max283x_set_txvga_gain(&max283x, 47); // Maximum TX gain
 	rf_path_set_lna(&rf_path, 1);         // Enable LNA
 	rf_path_set_antenna(&rf_path, 1);     // Select antenna path
