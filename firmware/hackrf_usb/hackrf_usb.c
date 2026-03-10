@@ -367,7 +367,7 @@ int main(void)
 	}
 
 	while (true) {
-		rx_mode(0);
+		tx_mode(0);
 // 		transceiver_request_t request;
 
 // 		// Briefly disable USB interrupt so that we can

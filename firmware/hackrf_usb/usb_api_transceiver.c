@@ -61,24 +61,33 @@
 #include "uart.h"
 
 // MAPPING FROM THE GR-OSMOSDR PROJECT
-void set_if_gain(const double gain)
+void rx_set_if_gain(const uint32_t gain)
 {
-	// TODO: find clip range
-	const uint32_t clip_gain = (uint32_t) gain;
+	//	if ( "IF" == name ) {
+	//		return osmosdr::gain_range_t( 0, 40, 8 );
+	//	}
+	//	in-between ranges, clip to nearest
+	const uint32_t clip_gain = (gain >= 40) ? 40 : ((uint32_t) (round(gain / 8))) * 8;
+	const uint8_t value = (uint8_t) clip_gain;
+	uart_printf("set rx if gain: %f -> %d\n", gain, value);
 	if (RADIO_OK !=
 	    radio_set_gain(
 		    &radio,
 		    RADIO_CHANNEL0,
 		    RADIO_GAIN_RX_LNA,
-		    (radio_gain_t) {.db = clip_gain})) {
+		    (radio_gain_t) {.db = value})) {
 		uart_printf("standalone RX setup failed: IF gain\n");
 	}
 }
 
-void set_rf_gain(const double gain)
+void rx_set_rf_gain(const uint32_t gain)
 {
-	const double clip_gain = (gain >= 14.0) ? 14.0 : 0.0;
-	const uint8_t value = (clip_gain == 14.0) ? 1 : 0;
+	//	if ( "RF" == name ) {
+	//		return osmosdr::gain_range_t( 0, 14, 14 );
+	//	}
+	const uint32_t clip_gain = (gain == 14) ? 14 : 0;
+	const uint8_t value = (clip_gain == 14) ? 1 : 0;
+	uart_printf("set rx rf gain: %f -> value=%u\n", gain, value);
 	if (RADIO_OK !=
 	    radio_set_gain(
 		    &radio,
@@ -89,17 +98,56 @@ void set_rf_gain(const double gain)
 	}
 }
 
-void set_bb_gain(const double gain)
+void rx_set_bb_gain(const double gain)
 {
-	// TODO: find clip range
-	const uint32_t clip_gain = (uint32_t) gain;
+	//	if ("BB" == name) {
+	//		return osmosdr::gain_range_t(0, 62, 2);
+	//	}
+	const uint32_t clip_gain =
+		(gain >= 62) ? 62 : ((uint32_t) ((round((double) gain / 2))) * 2);
+	const uint8_t value = (uint8_t) clip_gain;
+	uart_printf("set rx bb gain: %f -> %d\n", gain, value);
 	if (RADIO_OK !=
 	    radio_set_gain(
 		    &radio,
 		    RADIO_CHANNEL0,
 		    RADIO_GAIN_RX_VGA,
-		    (radio_gain_t) {.db = clip_gain})) {
+		    (radio_gain_t) {.db = value})) {
 		uart_printf("standalone RX setup failed: BB Gain\n");
+	}
+}
+
+void tx_set_rf_gain(const uint32_t gain)
+{
+	//  if ( "RF" == name ) {
+	// 		return osmosdr::gain_range_t( 0, 14, 14 );
+	// 	}
+	const uint32_t clip_gain = (gain == 14) ? 14 : 0;
+	const uint8_t value = (clip_gain == 14) ? 1 : 0;
+	uart_printf("set tx rf gain: %f -> %d\n", gain, value);
+	if (RADIO_OK !=
+	    radio_set_gain(
+		    &radio,
+		    RADIO_CHANNEL0,
+		    RADIO_GAIN_RX_LNA,
+		    (radio_gain_t) {.db = value})) {
+		uart_printf("standalone RX setup failed: IF gain\n");
+	}
+}
+
+void tx_set_if_gain(const double gain)
+{
+	// if ( "IF" == name ) {
+	// 	return osmosdr::gain_range_t( 0, 47, 1 );
+	// }
+	const uint32_t clip_gain = (gain >= 47) ? 47 : gain;
+	const uint8_t value = clip_gain;
+	if (radio_set_gain(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_GAIN_TX_VGA,
+		(radio_gain_t) {.db = value})) {
+		hackrf_ui()->set_bb_tx_vga_gain(value);
 	}
 }
 
@@ -164,7 +212,9 @@ void set_baseband_filter_bandwidth(double bandwidth)
 	//		0);
 	// In the Firmware: usb_vendor_request_set_baseband_filter_bandwidth
 	// 		const uint32_t bandwidth = (endpoint->setup.index << 16) | endpoint->setup.value;
-	if (RADIO_OK != radio_set_filter(
+	uart_printf("set baseband filter bandwidth (%f) -> bw = %d\n", bandwidth, bw);
+	if (RADIO_OK !=
+	    radio_set_filter(
 		    &radio,
 		    RADIO_CHANNEL0,
 		    RADIO_FILTER_BASEBAND,
@@ -243,7 +293,14 @@ int set_sample_rate(const double freq)
 	//		}
 	sample_rate_frac_set(freq_hz * 2, divider);
 	const uint32_t bw = _hackrf_compute_baseband_filter_bw(0.75 * freq_hz / divider);
-	if (RADIO_OK != radio_set_filter(
+	uart_printf(
+		"set_sample_rate(%f) -> freq_hz=%u divider=%u, setting baseband filter bw to %u\n",
+		freq,
+		freq_hz,
+		divider,
+		bw);
+	if (RADIO_OK !=
+	    radio_set_filter(
 		    &radio,
 		    RADIO_CHANNEL0,
 		    RADIO_FILTER_BASEBAND,
@@ -259,6 +316,7 @@ void set_centre_frequency(double freq)
 	const double _freq_corr = 0;
 	const uint64_t corr_freq = (uint64_t) (APPLY_PPM_CORR(freq, _freq_corr));
 	// hackrf_set_freq(freq_hz)
+	uart_printf("set frequency: %llu\n", (unsigned long long) corr_freq);
 	set_freq(corr_freq);
 }
 
@@ -963,29 +1021,29 @@ void transceiver_bulk_transfer_complete(void* user_data, unsigned int bytes_tran
 
 #define BIT_PACKET_SIZE 4
 
-static void standalone_autostart(void)
+static void rx_standalone_autostart(void)
 {
 	set_sample_rate(SAMPLE_RATE);
 	set_baseband_filter_bandwidth(BASEBAND_FILTER_BW);
 	set_centre_frequency(CENTRE_FREQ);
-	set_rf_gain(RF_GAIN);
-	set_if_gain(IF_GAIN);
-	set_bb_gain(BB_GAIN);
+	rx_set_rf_gain(RF_GAIN);
+	rx_set_if_gain(IF_GAIN);
+	rx_set_bb_gain(BB_GAIN);
 
-	if (RADIO_OK !=
-	    radio_set_antenna(
-		    &radio,
-		    RADIO_CHANNEL0,
-		    RADIO_ANTENNA_BIAS_TEE,
-		    (radio_antenna_t) {.enable = false})) {
-		uart_printf("standalone RX setup failed: antenna");
-		return;
-	}
+	// if (RADIO_OK !=
+	//     radio_set_antenna(
+	// 	    &radio,
+	// 	    RADIO_CHANNEL0,
+	// 	    RADIO_ANTENNA_BIAS_TEE,
+	// 	    (radio_antenna_t) {.enable = false})) {
+	// 	uart_printf("standalone RX setup failed: antenna");
+	// 	return;
+	// }
 
-	if (RADIO_OK != radio_set_trigger_enable(&radio, RADIO_CHANNEL0, false)) {
-		uart_printf("standalone RX setup failed: trigger");
-		return;
-	}
+	// if (RADIO_OK != radio_set_trigger_enable(&radio, RADIO_CHANNEL0, false)) {
+	// 	uart_printf("standalone RX setup failed: trigger");
+	// 	return;
+	// }
 
 	request_transceiver_mode(TRANSCEIVER_MODE_RX);
 	uart_printf("standalone RX autostart requested\n");
@@ -993,7 +1051,7 @@ static void standalone_autostart(void)
 
 void rx_mode(uint32_t seq)
 {
-	standalone_autostart();
+	rx_standalone_autostart();
 	uint32_t usb_count = 0;
 	transceiver_startup(TRANSCEIVER_MODE_RX);
 	baseband_streaming_enable(&sgpio_config);
@@ -1044,19 +1102,33 @@ void rx_mode(uint32_t seq)
 
 void tx_mode(uint32_t seq)
 {
+	uart_printf("TX mode");
 	init_sine_table();
-	sample_rate_frac_set(SAMPLE_RATE, 1); // 20 MS/s
-
+#if false
+	set_sample_rate(SAMPLE_RATE);
+	set_baseband_filter_bandwidth(15000000);
+	set_centre_frequency(CENTRE_FREQ);
+	// set_rf_gain(RF_GAIN);
+	tx_set_if_gain(40);
+	// set_bb_gain(BB_GAIN);
+	// radio_set_antenna(
+	// 	&radio,
+	// 	RADIO_CHANNEL0,
+	// 	RADIO_ANTENNA_BIAS_TEE,
+	// 	(radio_antenna_t) {.enable = true});
+	// if (RADIO_OK != radio_set_trigger_enable(&radio, RADIO_CHANNEL0, false)) {
+	// 	uart_printf("standalone TX setup failed: trigger");
+	// 	return;
+	// }
+#else
+	sample_rate_frac_set(SAMPLE_RATE, 1);         // 20 MS/s
 	// baseband_filter_bandwidth_set(15000000);   // 15 MHz bandwidth
-	radio_set_filter(
-		&radio,
-		RADIO_CHANNEL0,
-		RADIO_FILTER_BASEBAND,
-		(radio_filter_t) {.hz = 15000000});
-	set_freq(CENTRE_FREQ);                // Frequency 915 MHz
-	max283x_set_txvga_gain(&max283x, 47); // Maximum TX gain
-	rf_path_set_lna(&rf_path, 1);         // Enable LNA
-	rf_path_set_antenna(&rf_path, 1);     // Select antenna path
+	set_freq(CENTRE_FREQ);                       // Frequency 915 MHz
+	max283x_set_txvga_gain(&max283x, 47);      // Maximum TX gain
+	rf_path_set_lna(&rf_path, 1);              // Enable LNA
+	rf_path_set_antenna(&rf_path, 1);          // Select antenna path
+#endif
+	request_transceiver_mode(TRANSCEIVER_MODE_TX);
 
 	// Start transceiver once
 	transceiver_startup(TRANSCEIVER_MODE_TX);
@@ -1071,6 +1143,9 @@ void tx_mode(uint32_t seq)
 	// Continuously fill the USB bulk buffer with IQ data
 	while (1) {
 		// Wait until there's space to safely write
+		if (m0_state.m0_count == 0) {
+			uart_printf("Stalled\n");
+		}
 		if ((usb_count - m0_state.m0_count) <=
 		    USB_BULK_BUFFER_SIZE - USB_TRANSFER_SIZE) {
 			// Fill the buffer with your desired waveform
