@@ -1102,73 +1102,110 @@ void rx_mode(uint32_t seq)
 
 void tx_mode(uint32_t seq)
 {
-	uart_printf("TX mode");
-	init_sine_table();
-#if false
-	set_sample_rate(SAMPLE_RATE);
-	set_baseband_filter_bandwidth(15000000);
-	set_centre_frequency(CENTRE_FREQ);
-	// set_rf_gain(RF_GAIN);
-	tx_set_if_gain(40);
-	// set_bb_gain(BB_GAIN);
-	// radio_set_antenna(
-	// 	&radio,
-	// 	RADIO_CHANNEL0,
-	// 	RADIO_ANTENNA_BIAS_TEE,
-	// 	(radio_antenna_t) {.enable = true});
-	// if (RADIO_OK != radio_set_trigger_enable(&radio, RADIO_CHANNEL0, false)) {
-	// 	uart_printf("standalone TX setup failed: trigger");
-	// 	return;
-	// }
-#else
-	sample_rate_frac_set(SAMPLE_RATE, 1);         // 20 MS/s
-	// baseband_filter_bandwidth_set(15000000);   // 15 MHz bandwidth
-	set_freq(CENTRE_FREQ);                       // Frequency 915 MHz
-	max283x_set_txvga_gain(&max283x, 47);      // Maximum TX gain
-	rf_path_set_lna(&rf_path, 1);              // Enable LNA
-	rf_path_set_antenna(&rf_path, 1);          // Select antenna path
-#endif
-	request_transceiver_mode(TRANSCEIVER_MODE_TX);
+	uart_printf("tx_mode");
+	unsigned int usb_count = 0;
+	bool started = false;
 
-	// Start transceiver once
 	transceiver_startup(TRANSCEIVER_MODE_TX);
-	baseband_streaming_enable(&sgpio_config);
 
-	// Phase tracking for waveform continuity
-	static uint32_t phase = 0;
+	// Set up OUT transfer of buffer 0.
+	usb_transfer_schedule_block(
+		&usb_endpoint_bulk_out,
+		&usb_bulk_buffer[0x0000],
+		USB_TRANSFER_SIZE,
+		transceiver_bulk_transfer_complete,
+		NULL);
+	usb_count += USB_TRANSFER_SIZE;
 
-	// USB bulk transfer count initialization
-	uint32_t usb_count = 0;
-
-	// Continuously fill the USB bulk buffer with IQ data
-	while (1) {
-		// Wait until there's space to safely write
-		if (m0_state.m0_count == 0) {
-			uart_printf("Stalled\n");
+	while (transceiver_request.seq == seq) {
+		if (!started && (m0_state.m4_count == USB_BULK_BUFFER_SIZE)) {
+			// Buffer is now full, start streaming.
+			baseband_streaming_enable(&sgpio_config);
+			started = true;
 		}
-		if ((usb_count - m0_state.m0_count) <=
-		    USB_BULK_BUFFER_SIZE - USB_TRANSFER_SIZE) {
-			// Fill the buffer with your desired waveform
-			fill_data_buffer(
+		if ((usb_count - m0_state.m0_count) <= USB_TRANSFER_SIZE) {
+			usb_transfer_schedule_block(
+				&usb_endpoint_bulk_out,
 				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
 				USB_TRANSFER_SIZE,
-				&phase);
-
-			// Atomically update shared counters
-			nvic_disable_irq(NVIC_M0CORE_IRQ);
-			m0_state.m4_count += USB_TRANSFER_SIZE;
-			m0_state.m0_count += USB_TRANSFER_SIZE;
+				transceiver_bulk_transfer_complete,
+				NULL);
 			usb_count += USB_TRANSFER_SIZE;
-			nvic_enable_irq(NVIC_M0CORE_IRQ);
 		}
-
-		// Optional small delay
-		__asm__("nop");
 	}
 
-	// Never reaches here, but cleanup code can be included
 	transceiver_shutdown();
 }
+
+// void tx_mode(uint32_t seq)
+// {
+// 	uart_printf("TX mode");
+// 	init_sine_table();
+// #if false
+// 	set_sample_rate(SAMPLE_RATE);
+// 	set_baseband_filter_bandwidth(15000000);
+// 	set_centre_frequency(CENTRE_FREQ);
+// 	// set_rf_gain(RF_GAIN);
+// 	tx_set_if_gain(40);
+// 	// set_bb_gain(BB_GAIN);
+// 	// radio_set_antenna(
+// 	// 	&radio,
+// 	// 	RADIO_CHANNEL0,
+// 	// 	RADIO_ANTENNA_BIAS_TEE,
+// 	// 	(radio_antenna_t) {.enable = true});
+// 	// if (RADIO_OK != radio_set_trigger_enable(&radio, RADIO_CHANNEL0, false)) {
+// 	// 	uart_printf("standalone TX setup failed: trigger");
+// 	// 	return;
+// 	// }
+// #else
+// 	sample_rate_frac_set(SAMPLE_RATE, 1);         // 20 MS/s
+// 	// baseband_filter_bandwidth_set(15000000);   // 15 MHz bandwidth
+// 	set_freq(CENTRE_FREQ);                       // Frequency 915 MHz
+// 	max283x_set_txvga_gain(&max283x, 47);      // Maximum TX gain
+// 	rf_path_set_lna(&rf_path, 1);              // Enable LNA
+// 	rf_path_set_antenna(&rf_path, 1);          // Select antenna path
+// #endif
+// 	request_transceiver_mode(TRANSCEIVER_MODE_TX);
+
+// 	// Start transceiver once
+// 	transceiver_startup(TRANSCEIVER_MODE_TX);
+// 	baseband_streaming_enable(&sgpio_config);
+
+// 	// Phase tracking for waveform continuity
+// 	static uint32_t phase = 0;
+
+// 	// USB bulk transfer count initialization
+// 	uint32_t usb_count = 0;
+
+// 	// Continuously fill the USB bulk buffer with IQ data
+// 	while (1) {
+// 		// Wait until there's space to safely write
+// 		if (m0_state.m0_count == 0) {
+// 			uart_printf("Stalled\n");
+// 		}
+// 		if ((usb_count - m0_state.m0_count) <=
+// 		    USB_BULK_BUFFER_SIZE - USB_TRANSFER_SIZE) {
+// 			// Fill the buffer with your desired waveform
+// 			fill_data_buffer(
+// 				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
+// 				USB_TRANSFER_SIZE,
+// 				&phase);
+
+// 			// Atomically update shared counters
+// 			nvic_disable_irq(NVIC_M0CORE_IRQ);
+// 			m0_state.m4_count += USB_TRANSFER_SIZE;
+// 			m0_state.m0_count += USB_TRANSFER_SIZE;
+// 			usb_count += USB_TRANSFER_SIZE;
+// 			nvic_enable_irq(NVIC_M0CORE_IRQ);
+// 		}
+
+// 		// Optional small delay
+// 		__asm__("nop");
+// 	}
+
+// 	// Never reaches here, but cleanup code can be included
+// 	transceiver_shutdown();
+// }
 
 void off_mode(uint32_t seq)
 {
