@@ -1,4 +1,3 @@
-
 /*
  * Copyright 2012-2022 Great Scott Gadgets <info@greatscottgadgets.com>
  * Copyright 2012 Jared Boone
@@ -22,14 +21,18 @@
  * Boston, MA 02110-1301, USA.
  */
 
+#include "usb_api_transceiver.h"
+
 #include "hackrf_ui.h"
 #include "operacake_sctimer.h"
 
 #include <libopencm3/cm3/vector.h>
-#include <libopencm3/lpc43xx/m4/nvic.h>
+#include "usb_bulk_buffer.h"
 #include "usb_api_m0_state.h"
 
-#include "usb_api_cpld.h"
+#include "usb_api_cpld.h" // Remove when CPLD update is handled elsewhere
+
+#include "max2837.h"
 #include "max2839.h"
 #include "rf_path.h"
 #include "tuning.h"
@@ -40,309 +43,22 @@
 
 #include <stddef.h>
 #include <string.h>
-
-#include "usb_endpoint.h"
-#include "usb_api_sweep.h"
-
-#include <math.h>
-#include <stdint.h>
-#include "sine_table.h"
-
-#include "max2837.h"
-#include "rf_path.h"
-#include "sgpio.h"
-#include "usb_bulk_buffer.h"
-#include "usb_api_transceiver.h"
-
-#include <stdbool.h>
-#include "gpio.h"
-#include <libopencm3/lpc43xx/timer.h>
-#include <stdlib.h>
 #include "uart.h"
 
-// MAPPING FROM THE GR-OSMOSDR PROJECT
-void rx_set_if_gain(const uint32_t gain)
-{
-	//	if ( "IF" == name ) {
-	//		return osmosdr::gain_range_t( 0, 40, 8 );
-	//	}
-	//	in-between ranges, clip to nearest
-	const uint32_t clip_gain = (gain >= 40) ? 40 : ((uint32_t) (round(gain / 8))) * 8;
-	const uint8_t value = (uint8_t) clip_gain;
-	uart_printf("set rx if gain: %f -> %d\n", gain, value);
-	if (RADIO_OK !=
-	    radio_set_gain(
-		    &radio,
-		    RADIO_CHANNEL0,
-		    RADIO_GAIN_RX_LNA,
-		    (radio_gain_t) {.db = value})) {
-		uart_printf("standalone RX setup failed: IF gain\n");
-	}
-}
+#include "usb_endpoint.h"
 
-void rx_set_rf_gain(const uint32_t gain)
-{
-	//	if ( "RF" == name ) {
-	//		return osmosdr::gain_range_t( 0, 14, 14 );
-	//	}
-	const uint32_t clip_gain = (gain == 14) ? 14 : 0;
-	const uint8_t value = (clip_gain == 14) ? 1 : 0;
-	uart_printf("set rx rf gain: %f -> value=%u\n", gain, value);
-	if (RADIO_OK !=
-	    radio_set_gain(
-		    &radio,
-		    RADIO_CHANNEL0,
-		    RADIO_GAIN_RF_AMP,
-		    (radio_gain_t) {.enable = value})) {
-		uart_printf("standalone RX setup failed: RF Gain\n");
-	}
-}
+#include "usb_api_sweep.h"
+#include <math.h>
 
-void rx_set_bb_gain(const double gain)
-{
-	//	if ("BB" == name) {
-	//		return osmosdr::gain_range_t(0, 62, 2);
-	//	}
-	const uint32_t clip_gain =
-		(gain >= 62) ? 62 : ((uint32_t) ((round((double) gain / 2))) * 2);
-	const uint8_t value = (uint8_t) clip_gain;
-	uart_printf("set rx bb gain: %f -> %d\n", gain, value);
-	if (RADIO_OK !=
-	    radio_set_gain(
-		    &radio,
-		    RADIO_CHANNEL0,
-		    RADIO_GAIN_RX_VGA,
-		    (radio_gain_t) {.db = value})) {
-		uart_printf("standalone RX setup failed: BB Gain\n");
-	}
-}
+#define USB_TRANSFER_SIZE 0x4000
 
-void tx_set_rf_gain(const uint32_t gain)
-{
-	//  if ( "RF" == name ) {
-	// 		return osmosdr::gain_range_t( 0, 14, 14 );
-	// 	}
-	const uint32_t clip_gain = (gain == 14) ? 14 : 0;
-	const uint8_t value = (clip_gain == 14) ? 1 : 0;
-	uart_printf("set tx rf gain: %f -> %d\n", gain, value);
-	if (RADIO_OK !=
-	    radio_set_gain(
-		    &radio,
-		    RADIO_CHANNEL0,
-		    RADIO_GAIN_RX_LNA,
-		    (radio_gain_t) {.db = value})) {
-		uart_printf("standalone RX setup failed: IF gain\n");
-	}
-}
-
-void tx_set_if_gain(const double gain)
-{
-	// if ( "IF" == name ) {
-	// 	return osmosdr::gain_range_t( 0, 47, 1 );
-	// }
-	const uint32_t clip_gain = (gain >= 47) ? 47 : gain;
-	const uint8_t value = clip_gain;
-	if (radio_set_gain(
-		&radio,
-		RADIO_CHANNEL0,
-		RADIO_GAIN_TX_VGA,
-		(radio_gain_t) {.db = value})) {
-		hackrf_ui()->set_bb_tx_vga_gain(value);
-	}
-}
-
-// FROM HACKRF HOST CODE
-typedef struct {
-	uint32_t bandwidth_hz;
-} max2837_ft_t;
-
-static const max2837_ft_t max2837_ft[] = {
-	{1750000},
-	{2500000},
-	{3500000},
-	{5000000},
-	{5500000},
-	{6000000},
-	{7000000},
-	{8000000},
-	{9000000},
-	{10000000},
-	{12000000},
-	{14000000},
-	{15000000},
-	{20000000},
-	{24000000},
-	{28000000},
-	{0}};
-
-uint32_t _hackrf_compute_baseband_filter_bw(const uint32_t bandwidth_hz)
-{
-	const max2837_ft_t* p = max2837_ft;
-	while (p->bandwidth_hz != 0) {
-		if (p->bandwidth_hz >= bandwidth_hz) {
-			break;
-		}
-		p++;
-	}
-
-	/* Round down (if no equal to first entry) and if > bandwidth_hz */
-	if (p != max2837_ft) {
-		if (p->bandwidth_hz > bandwidth_hz)
-			p--;
-	}
-
-	return p->bandwidth_hz;
-}
-
-void set_baseband_filter_bandwidth(double bandwidth)
-{
-	// compute best default value depending on sample rate (auto filter)
-	const uint32_t bw = _hackrf_compute_baseband_filter_bw(bandwidth);
-	// NOTE:
-	// In the host: hackrf_set_baseband_filter_bandwidth
-	// 	result = libusb_control_transfer(
-	//		device->usb_device,
-	//		LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR |
-	//			LIBUSB_RECIPIENT_DEVICE,
-	//		HACKRF_VENDOR_REQUEST_BASEBAND_FILTER_BANDWIDTH_SET,
-	//		bandwidth_hz & 0xffff,
-	//		bandwidth_hz >> 16,
-	//		NULL,
-	//		0,
-	//		0);
-	// In the Firmware: usb_vendor_request_set_baseband_filter_bandwidth
-	// 		const uint32_t bandwidth = (endpoint->setup.index << 16) | endpoint->setup.value;
-	uart_printf("set baseband filter bandwidth (%f) -> bw = %d\n", bandwidth, bw);
-	if (RADIO_OK !=
-	    radio_set_filter(
-		    &radio,
-		    RADIO_CHANNEL0,
-		    RADIO_FILTER_BASEBAND,
-		    (radio_filter_t) {.hz = bandwidth})) {
-		uart_printf("standalone RX setup failed: baseband filter\n");
-	}
-}
-
-// FROM HACKRF HOST CODE
-int set_sample_rate(const double freq)
-{
-	const int MAX_N = 32;
-	uint32_t freq_hz, divider;
-	double freq_frac = 1.0 + freq - (int) freq;
-	uint64_t a, m;
-	int i, e;
-
-	union {
-		uint64_t u64;
-		double d;
-	} v;
-
-	v.d = freq;
-
-	e = (v.u64 >> 52) - 1023;
-
-	m = ((1ULL << 52) - 1);
-
-	v.d = freq_frac;
-	v.u64 &= m;
-
-	m &= ~((1 << (e + 4)) - 1);
-
-	a = 0;
-
-	for (i = 1; i < MAX_N; i++) {
-		a += v.u64;
-		if (!(a & m) || !(~a & m))
-			break;
-	}
-
-	if (i == MAX_N)
-		i = 1;
-
-	freq_hz = (uint32_t) (freq * i + 0.5);
-	divider = i;
-
-	// uart_printf("freq_hz: %d, divider: %d\n", freq_hz, divider);
-	// NOTE:
-	//	 In the host: hackrf_set_sample_rate_manual(device, freq_hz, divider);
-	//	result = libusb_control_transfer(
-	//		device->usb_device,
-	//		LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR |
-	//			LIBUSB_RECIPIENT_DEVICE,
-	//		HACKRF_VENDOR_REQUEST_SAMPLE_RATE_SET,
-	//		0,
-	//		0,
-	//		(unsigned char*) &set_fracrate_params,
-	//		length,
-	//		0);
-	//	if (result < length) {
-	//		last_libusb_error = result;
-	//		return HACKRF_ERROR_LIBUSB;
-	//	} else {
-	//		return hackrf_set_baseband_filter_bandwidth(
-	//			device,
-	//			hackrf_compute_baseband_filter_bw(
-	//				(uint32_t) (0.75 * freq_hz / divider)));
-	//	}
-	// In the firmware: usb_vendor_request_set_sample_rate_frac
-	//		if (sample_rate_frac_set(
-	//		    set_sample_r_params.freq_hz * 2,
-	//		    set_sample_r_params.divider)) {
-	//			usb_transfer_schedule_ack(endpoint->in);
-	//			return USB_REQUEST_STATUS_OK;
-	//		}
-	sample_rate_frac_set(freq_hz * 2, divider);
-	const uint32_t bw = _hackrf_compute_baseband_filter_bw(0.75 * freq_hz / divider);
-	uart_printf(
-		"set_sample_rate(%f) -> freq_hz=%u divider=%u, setting baseband filter bw to %u\n",
-		freq,
-		freq_hz,
-		divider,
-		bw);
-	if (RADIO_OK !=
-	    radio_set_filter(
-		    &radio,
-		    RADIO_CHANNEL0,
-		    RADIO_FILTER_BASEBAND,
-		    (radio_filter_t) {.hz = bw})) {
-		uart_printf(
-			"standalone RX setup failed: set sample rate and baseband filter\n");
-	}
-}
-
-void set_centre_frequency(double freq)
-{
-#define APPLY_PPM_CORR(val, ppm) ((val) * (1.0 + (ppm) * 0.000001))
-	const double _freq_corr = 0;
-	const uint64_t corr_freq = (uint64_t) (APPLY_PPM_CORR(freq, _freq_corr));
-	// hackrf_set_freq(freq_hz)
-	uart_printf("set frequency: %llu\n", (unsigned long long) corr_freq);
-	set_freq(corr_freq);
-}
-
-extern uint32_t __m0_start__;
-extern uint32_t __m0_end__;
-extern uint32_t __ram_m0_start__;
-extern uint32_t _etext_ram, _text_ram, _etext_rom;
-extern void tx_autostart_init(void);
-
-#ifndef M_PI
-	#define M_PI 3.14159265358979323846
-#endif
-
-#define USB_TRANSFER_SIZE 256
-#define SINE_FREQ         200000 // 200 kHz sine wave
-
-#define SAMPLE_RATE        10000000  // 10 Msps sample rate
-#define BASEBAND_FILTER_BW 100000    // 100 kHz baseband filter bandwidth
-#define CENTRE_FREQ        915000000 // 915 MHz
-
-#define RF_GAIN 30 // 30 dB RF gain
-#define IF_GAIN 40 // 40 dB IF gain
-#define BB_GAIN 30 // 30 dB baseband gain
-
-const uint32_t TX_BIT_SAMPLES = 10000000;
-const uint32_t RX_BIT_SAMPLES = TX_BIT_SAMPLES;
+// CUSTOM DEFS
+#include "sine_table.h"
+#include "gr_lib.h"
+#define SAMPLE_RATE    10000000
+#define CENTRE_FREQ    915000000
+#define SINE_FREQ      100000
+#define TX_BIT_SAMPLES 1000
 
 typedef struct {
 	uint32_t freq_mhz;
@@ -371,9 +87,12 @@ usb_request_status_t usb_vendor_request_set_baseband_filter_bandwidth(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_baseband_filter_bandwidth SETUP index=%u value=%u\n",
+			endpoint->setup.index,
+			endpoint->setup.value);
 		const uint32_t bandwidth =
 			(endpoint->setup.index << 16) | endpoint->setup.value;
-		// uart_printf("radio_set_filter(bandwidth=%u)\n", bandwidth);
 		radio_error_t result = radio_set_filter(
 			&radio,
 			RADIO_CHANNEL0,
@@ -400,6 +119,10 @@ usb_request_status_t usb_vendor_request_set_freq(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_freq SETUP freq_mhz=%u freq_hz=%u\n",
+			set_freq_params.freq_mhz,
+			set_freq_params.freq_hz);
 		usb_transfer_schedule_block(
 			endpoint->out,
 			&set_freq_params,
@@ -537,19 +260,14 @@ usb_request_status_t usb_vendor_request_set_lna_gain(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_lna_gain SETUP index=%u\n",
+			endpoint->setup.index);
 		radio_gain_t gain = {.db = endpoint->setup.index};
 		uint8_t value =
 			radio_set_gain(&radio, RADIO_CHANNEL0, RADIO_GAIN_RX_LNA, gain);
 		endpoint->buffer[0] = value;
-		uart_printf(
-			"radio_set_gain(RADIO_GAIN_RX_LNA, %u) -> value=%u\n",
-			gain.db,
-			value);
 		if (value) {
-			uart_printf(
-				"set_lna_gain(%u) radio_set_gain(value=%u)\n",
-				endpoint->setup.index,
-				value);
 			hackrf_ui()->set_bb_lna_gain(endpoint->setup.index);
 		}
 		usb_transfer_schedule_block(
@@ -569,19 +287,14 @@ usb_request_status_t usb_vendor_request_set_vga_gain(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_vga_gain SETUP index=%u\n",
+			endpoint->setup.index);
 		radio_gain_t gain = {.db = endpoint->setup.index};
 		uint8_t value =
 			radio_set_gain(&radio, RADIO_CHANNEL0, RADIO_GAIN_RX_VGA, gain);
 		endpoint->buffer[0] = value;
-		uart_printf(
-			"radio_set_gain(RADIO_GAIN_RX_VGA, %u) -> value=%u\n",
-			gain.db,
-			value);
 		if (value) {
-			uart_printf(
-				"set_vga_gain(%u) radio_set_gain(value=%u)\n",
-				endpoint->setup.index,
-				value);
 			hackrf_ui()->set_bb_vga_gain(endpoint->setup.index);
 		}
 		usb_transfer_schedule_block(
@@ -601,19 +314,14 @@ usb_request_status_t usb_vendor_request_set_txvga_gain(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
+		uart_printf(
+			"usb_vendor_request_set_txvga_gain SETUP index=%u\n",
+			endpoint->setup.index);
 		radio_gain_t gain = {.db = endpoint->setup.index};
 		uint8_t value =
 			radio_set_gain(&radio, RADIO_CHANNEL0, RADIO_GAIN_TX_VGA, gain);
 		endpoint->buffer[0] = value;
-		uart_printf(
-			"radio_set_gain(RADIO_GAIN_TX_VGA, %u) -> value=%u\n",
-			gain.db,
-			value);
 		if (value) {
-			uart_printf(
-				"set_txvga_gain(%u) radio_set_gain(value=%u)\n",
-				endpoint->setup.index,
-				value);
 			hackrf_ui()->set_bb_tx_vga_gain(endpoint->setup.index);
 		}
 		usb_transfer_schedule_block(
@@ -728,111 +436,6 @@ static uint8_t* dynamic_bit_pattern = NULL;
 static size_t dynamic_pattern_len = 0;
 static bool pattern_sent_once = false; // New flag to track if pattern was sent once
 
-// Add new USB request handler for setting bitstream pattern
-usb_request_status_t usb_vendor_request_set_bitstream_pattern(
-	usb_endpoint_t* const endpoint,
-	const usb_transfer_stage_t stage)
-{
-	if (stage == USB_TRANSFER_STAGE_SETUP) {
-		// Free previous pattern if it exists
-		if (dynamic_bit_pattern) {
-			free(dynamic_bit_pattern);
-			dynamic_bit_pattern = NULL;
-		}
-
-		// Allocate new pattern buffer
-		dynamic_pattern_len = endpoint->setup.length;
-		dynamic_bit_pattern = malloc(dynamic_pattern_len);
-		if (!dynamic_bit_pattern) {
-			return USB_REQUEST_STATUS_STALL;
-		}
-
-		// Clear the buffer before receiving new data
-		memset(dynamic_bit_pattern, 0, dynamic_pattern_len);
-
-		// Reset the pattern sent flag for new pattern
-		pattern_sent_once = false;
-
-		// Schedule data transfer
-		usb_transfer_schedule_block(
-			endpoint->out,
-			dynamic_bit_pattern,
-			dynamic_pattern_len,
-			NULL,
-			NULL);
-		return USB_REQUEST_STATUS_OK;
-	} else if (stage == USB_TRANSFER_STAGE_DATA) {
-		// Verify we received the expected amount of data
-		if (endpoint->setup.length != dynamic_pattern_len) {
-			free(dynamic_bit_pattern);
-			dynamic_bit_pattern = NULL;
-			dynamic_pattern_len = 0;
-			return USB_REQUEST_STATUS_STALL;
-		}
-
-		// Clear the USB bulk buffer to ensure new pattern is used
-		memset(usb_bulk_buffer, 0, USB_BULK_BUFFER_SIZE);
-
-		// Reset the phase and counters to ensure clean start with new pattern
-		static uint32_t phase = 0;
-		phase = 0;
-
-		usb_transfer_schedule_ack(endpoint->in);
-		return USB_REQUEST_STATUS_OK;
-	}
-	return USB_REQUEST_STATUS_OK;
-}
-
-// void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
-// {
-// 	const uint32_t BYTES_PER_SAMPLE = 2; // I + Q
-// 	const uint8_t MID_SCALE = 0;         // unsigned zero level
-
-// 	// phase increment through the sine table
-// 	const uint32_t phase_increment = (SINE_FREQ * SINE_TABLE_SIZE) / SAMPLE_RATE;
-
-// 	// persistent state
-// 	static uint32_t table_phase = 0;   // index into sine_table
-// 	static uint32_t sample_in_bit = 0; // 0…BIT_SAMPLES−1
-// 	static uint32_t bit_index = 0;     // 0…dynamic_pattern_len−1
-// 	// static const uint8_t dynamic_bit_pattern[] = {1, 1, 1, 0, 1, 0, 1, 0};
-// 	static const uint8_t dynamic_bit_pattern[] =
-// 		{1, 0, 1, 0, 1, 0, 1, 0}; // Example pattern
-// 	const uint32_t dynamic_pattern_len =
-// 		sizeof(dynamic_bit_pattern) / sizeof(*dynamic_bit_pattern);
-
-// 	const uint32_t total_samples = len / BYTES_PER_SAMPLE;
-
-// 	for (uint32_t s = 0; s < total_samples; s++) {
-// 		const uint32_t i = s * BYTES_PER_SAMPLE;
-// 		if (dynamic_bit_pattern[bit_index]) {
-// 			// — "1": sine output
-// 			const uint32_t ti = table_phase % SINE_TABLE_SIZE;
-// 			buffer[i] = sine_table[2 * ti];
-// 			buffer[i + 1] = sine_table[2 * ti + 1];
-// 			// uart_printf("1");
-// 		} else {
-// 			// — "0": flat mid-scale
-// 			buffer[i] = MID_SCALE;
-// 			buffer[i + 1] = MID_SCALE;
-// 			// uart_printf("0");
-// 		}
-// 		// advance phase even when outputting "0" to maintain correct timing when we return to "1"
-// 		table_phase = (table_phase + phase_increment) % SINE_TABLE_SIZE;
-
-// 		// advance sample count; after TX_BIT_SAMPLES, move to next bit
-// 		if (++sample_in_bit >= TX_BIT_SAMPLES) {
-// 			sample_in_bit = 0;
-// 			bit_index = (bit_index + 1) % dynamic_pattern_len;
-// 			uart_printf("%d", dynamic_bit_pattern[bit_index]);
-// 			// If we've completed one full pattern, set the flag
-// 			if (bit_index == 0) {
-// 				pattern_sent_once = true;
-// 			}
-// 		}
-// 	}
-// }
-
 void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 {
 	const uint32_t BYTES_PER_SAMPLE = 2; // I + Q
@@ -845,6 +448,20 @@ void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 	static uint32_t table_phase = 0;   // index into sine_table
 	static uint32_t sample_in_bit = 0; // 0…BIT_SAMPLES−1
 	static uint32_t bit_index = 0;     // 0…dynamic_pattern_len−1
+					   /*
+	// Check if we have a valid pattern
+	if (!dynamic_bit_pattern || dynamic_pattern_len == 0) {
+		// If no pattern is set, fill buffer with zeros
+		memset(buffer, 0, len);
+		return;
+	}
+
+	// If we've already sent the pattern once, fill with zeros
+	if (pattern_sent_once) {
+		memset(buffer, 0, len);
+		return;
+	}
+*/
 	static const uint8_t dynamic_bit_pattern[] = {1, 1, 1, 0, 1, 0, 1, 0};
 #define dynamic_pattern_len (sizeof(dynamic_bit_pattern) / sizeof(*dynamic_bit_pattern))
 
@@ -857,14 +474,11 @@ void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 			uint32_t ti = table_phase % SINE_TABLE_SIZE;
 			buffer[i] = sine_table[2 * ti];
 			buffer[i + 1] = sine_table[2 * ti + 1];
-			// uart_printf("%d", buffer[i]);
 		} else {
 			// — "0": flat mid-scale
 			buffer[i] = MID_SCALE;
 			buffer[i + 1] = MID_SCALE;
-			// uart_printf("%d", buffer[i]);
 		}
-
 		table_phase = (table_phase + phase_increment) % SINE_TABLE_SIZE;
 
 		// advance sample count; after BIT_SAMPLES, move to next bit
@@ -877,30 +491,6 @@ void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 				pattern_sent_once = true;
 			}
 		}
-	}
-}
-
-void fill_square_buffer(uint8_t* buffer, uint32_t len, uint32_t* phase)
-{
-	const uint32_t points_per_state = 8192;
-	uint8_t high_val = 127;
-	uint8_t low_val = 0;
-
-	for (uint32_t i = 0; i < len; i += 2) {
-		uint32_t current_point = (*phase) % (points_per_state * 2);
-
-		if (current_point < points_per_state) {
-			// High state (127 amplitude)
-			buffer[i] = high_val;     // I sample
-			buffer[i + 1] = high_val; // Q sample
-		} else {
-			// Low state (0 amplitude)
-			buffer[i] = low_val;     // I sample
-			buffer[i + 1] = low_val; // Q sample
-		}
-
-		// Increment phase to move to next point
-		*phase = (*phase + 1) % (points_per_state * 2);
 	}
 }
 
@@ -1019,90 +609,124 @@ void transceiver_bulk_transfer_complete(void* user_data, unsigned int bytes_tran
 	m0_state.m4_count += bytes_transferred;
 }
 
-#define BIT_PACKET_SIZE 4
+float _rx_lut[0xff];
 
-static void rx_standalone_autostart(void)
+void init_rx_lookup_table(void)
 {
-	set_sample_rate(SAMPLE_RATE);
-	set_baseband_filter_bandwidth(BASEBAND_FILTER_BW);
-	set_centre_frequency(CENTRE_FREQ);
-	rx_set_rf_gain(RF_GAIN);
-	rx_set_if_gain(IF_GAIN);
-	rx_set_bb_gain(BB_GAIN);
+	for (unsigned int i = 0; i <= 0xff; i++) {
+		_rx_lut[i] = ((float) ((int8_t) i)) * (1.0f / 128.0f);
+	}
+	uart_printf("RX Lookup Table initialised\n");
+}
 
-	// if (RADIO_OK !=
-	//     radio_set_antenna(
-	// 	    &radio,
-	// 	    RADIO_CHANNEL0,
-	// 	    RADIO_ANTENNA_BIAS_TEE,
-	// 	    (radio_antenna_t) {.enable = false})) {
-	// 	uart_printf("standalone RX setup failed: antenna");
-	// 	return;
-	// }
+void rx_signal_process(uint32_t usb_count)
+{
+#define N_BITS_PER_UNIT   8
+#define N_SAMPLES_PER_BIT 1000
+#define GLITCH_TOLERANCE  50
+	static uint32_t sample_count = 0;
+	static bool clean_bit = 0; // currently accepted
+	static uint32_t glitch_count = 0;
+	static bool bit_buffer[1024];
+	static uint32_t bit_buffer_index = 0;
 
-	// if (RADIO_OK != radio_set_trigger_enable(&radio, RADIO_CHANNEL0, false)) {
-	// 	uart_printf("standalone RX setup failed: trigger");
-	// 	return;
-	// }
+	for (uint32_t i = 0; i < USB_TRANSFER_SIZE; i += 2) {
+		const uint8_t* const buffer =
+			&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
+		const float I = _rx_lut[buffer[i]];
+		const float Q = _rx_lut[buffer[i + 1]];
+		// uart_printf("I/Q Data: I=%f Q=%f\n", I, Q);
 
-	request_transceiver_mode(TRANSCEIVER_MODE_RX);
-	uart_printf("standalone RX autostart requested\n");
+		const float mag = sqrt(I * I + Q * Q);
+		const bool raw_bit = ({ // bits received (with noise)
+			// threshold logic from GNU radio
+			static bool thres_last_bit = 0; // < static variable
+			const float thres_low = 0.1;
+			const float thres_high = 0.5;
+			if (mag < thres_low) {
+				thres_last_bit = 0;
+			} else if (mag > thres_high) {
+				thres_last_bit = 1;
+			}
+			thres_last_bit;
+		});
+
+		// glitch filtering (tolerate some noise but flip bit if it exceeds the threshold)
+		if (raw_bit != clean_bit) {
+			glitch_count++;
+			if (glitch_count >= GLITCH_TOLERANCE) {
+				clean_bit = raw_bit; // flip bit
+				glitch_count = 0;
+				// sample count realignment
+				sample_count = GLITCH_TOLERANCE;
+			} else {
+				// uart_printf(
+				// 	"Glitch: raw_bit=%d clean_bit=%d glitch_count=%u\n",
+				// 	raw_bit,
+				// 	clean_bit,
+				// 	glitch_count);
+			}
+		} else {
+			glitch_count = 0;
+		}
+
+		// centre sampling
+		sample_count++;
+		if (sample_count == N_SAMPLES_PER_BIT / 2) {
+			bit_buffer[bit_buffer_index++] = clean_bit;
+			if (bit_buffer_index >= N_BITS_PER_UNIT) {
+				// Process a full unit of bits
+				uint8_t byte = 0;
+				// uart_printf("got byte: ");
+				for (int i = 0; i < N_BITS_PER_UNIT; i++) {
+					// uart_printf(
+					// 	"bit_buffer[%d] = %d\n",
+					// 	i,
+					// 	bit_buffer[i]);
+					byte |= (bit_buffer[i] << (7 - i));
+					uart_printf("%d", bit_buffer[i]);
+				}
+				// uart_printf("Sending byte: 0x%02x\n", byte);
+				uart_printf("\n");
+				bit_buffer_index = 0;
+			}
+		}
+		// reset
+		if (sample_count >= N_SAMPLES_PER_BIT) {
+			sample_count = 0;
+		}
+	}
 }
 
 void rx_mode(uint32_t seq)
 {
-	rx_standalone_autostart();
 	uint32_t usb_count = 0;
+
 	transceiver_startup(TRANSCEIVER_MODE_RX);
+
 	baseband_streaming_enable(&sgpio_config);
 
-	// Constants matching the transmitter
-	uint32_t sample_count = 0;
-	uint64_t mag2_sum = 0; // Sum of magnitude squared
-	bool current_bit = false;
-
-	uint32_t noise_floor = 0;
-	const uint32_t THRESHOLD_MARGIN = 500;
-
-	while (1) {
-		uint8_t* buffer = &usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
-		for (uint32_t i = 0; i < USB_TRANSFER_SIZE; i += 2) {
-			int32_t I = (int8_t) buffer[i];
-			int32_t Q = (int8_t) buffer[i + 1];
-			// consume sample to avoid overflow
-			usb_count += 2;
-			m0_state.m4_count += 2;
-
-			uint32_t mag2 = I * I + Q * Q;
-			mag2_sum += mag2;
-			sample_count++;
-
-			if (sample_count >= RX_BIT_SAMPLES) {
-				uint32_t mag2_avg = mag2_sum / RX_BIT_SAMPLES;
-
-				// Update noise floor (slow moving average)
-				noise_floor = (noise_floor * 15 + mag2_avg) / 16;
-
-				// Adaptive threshold
-				uint32_t adaptive_threshold =
-					noise_floor + THRESHOLD_MARGIN;
-
-				current_bit = (mag2_avg > adaptive_threshold);
-
-				uart_printf("%d", current_bit);
-
-				sample_count = 0;
-				mag2_sum = 0;
-			}
+	while (transceiver_request.seq == seq) {
+		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
+			// BEGIN signal process
+			// rx_signal_process(usb_count);
+			// END   signal process
+			usb_transfer_schedule_block(
+				&usb_endpoint_bulk_in,
+				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
+				USB_TRANSFER_SIZE,
+				transceiver_bulk_transfer_complete,
+				NULL);
+			usb_count += USB_TRANSFER_SIZE;
 		}
 	}
 
 	transceiver_shutdown();
 }
 
+#if false
 void tx_mode(uint32_t seq)
 {
-	uart_printf("tx_mode");
 	unsigned int usb_count = 0;
 	bool started = false;
 
@@ -1136,76 +760,57 @@ void tx_mode(uint32_t seq)
 
 	transceiver_shutdown();
 }
+#else
+void tx_mode(uint32_t seq)
+{
+	uart_printf("tx mode");
+	init_sine_table();
+#if false
+	set_sample_rate(SAMPLE_RATE);
+	set_baseband_filter_bandwidth(15000000);
+	set_centre_frequency(CENTRE_FREQ);
+	tx_set_rf_gain(30);
+	tx_set_if_gain(40);
+	set_antenna_enable(false);
+#endif
+	// Start transceiver once
+	transceiver_startup(TRANSCEIVER_MODE_TX);
+	baseband_streaming_enable(&sgpio_config); // < We definitely need this
 
-// void tx_mode(uint32_t seq)
-// {
-// 	uart_printf("TX mode");
-// 	init_sine_table();
-// #if false
-// 	set_sample_rate(SAMPLE_RATE);
-// 	set_baseband_filter_bandwidth(15000000);
-// 	set_centre_frequency(CENTRE_FREQ);
-// 	// set_rf_gain(RF_GAIN);
-// 	tx_set_if_gain(40);
-// 	// set_bb_gain(BB_GAIN);
-// 	// radio_set_antenna(
-// 	// 	&radio,
-// 	// 	RADIO_CHANNEL0,
-// 	// 	RADIO_ANTENNA_BIAS_TEE,
-// 	// 	(radio_antenna_t) {.enable = true});
-// 	// if (RADIO_OK != radio_set_trigger_enable(&radio, RADIO_CHANNEL0, false)) {
-// 	// 	uart_printf("standalone TX setup failed: trigger");
-// 	// 	return;
-// 	// }
-// #else
-// 	sample_rate_frac_set(SAMPLE_RATE, 1);         // 20 MS/s
-// 	// baseband_filter_bandwidth_set(15000000);   // 15 MHz bandwidth
-// 	set_freq(CENTRE_FREQ);                       // Frequency 915 MHz
-// 	max283x_set_txvga_gain(&max283x, 47);      // Maximum TX gain
-// 	rf_path_set_lna(&rf_path, 1);              // Enable LNA
-// 	rf_path_set_antenna(&rf_path, 1);          // Select antenna path
-// #endif
-// 	request_transceiver_mode(TRANSCEIVER_MODE_TX);
+	// Phase tracking for waveform continuity
+	static uint32_t phase = 0;
 
-// 	// Start transceiver once
-// 	transceiver_startup(TRANSCEIVER_MODE_TX);
-// 	baseband_streaming_enable(&sgpio_config);
+	// USB bulk transfer count initialization
+	uint32_t usb_count = 0;
 
-// 	// Phase tracking for waveform continuity
-// 	static uint32_t phase = 0;
+	// Continuously fill the USB bulk buffer with IQ data
+	bool started = false;
+	while (1) {
+		started = true;
+		if ((usb_count - m0_state.m0_count) <=
+		    USB_BULK_BUFFER_SIZE - USB_TRANSFER_SIZE) {
+			// Fill the buffer with your desired waveform
+			fill_data_buffer(
+				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
+				USB_TRANSFER_SIZE,
+				&phase);
+			// modulated in batch
+			m0_state.m4_count += USB_TRANSFER_SIZE;
+			usb_count += USB_TRANSFER_SIZE;
+		}
+		
+		if (started && m0_state.m0_count == 0) {
+			uart_printf("Stalled\n");
+		}
 
-// 	// USB bulk transfer count initialization
-// 	uint32_t usb_count = 0;
+		// Optional small delay
+		__asm__("nop");
+	}
 
-// 	// Continuously fill the USB bulk buffer with IQ data
-// 	while (1) {
-// 		// Wait until there's space to safely write
-// 		if (m0_state.m0_count == 0) {
-// 			uart_printf("Stalled\n");
-// 		}
-// 		if ((usb_count - m0_state.m0_count) <=
-// 		    USB_BULK_BUFFER_SIZE - USB_TRANSFER_SIZE) {
-// 			// Fill the buffer with your desired waveform
-// 			fill_data_buffer(
-// 				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
-// 				USB_TRANSFER_SIZE,
-// 				&phase);
-
-// 			// Atomically update shared counters
-// 			nvic_disable_irq(NVIC_M0CORE_IRQ);
-// 			m0_state.m4_count += USB_TRANSFER_SIZE;
-// 			m0_state.m0_count += USB_TRANSFER_SIZE;
-// 			usb_count += USB_TRANSFER_SIZE;
-// 			nvic_enable_irq(NVIC_M0CORE_IRQ);
-// 		}
-
-// 		// Optional small delay
-// 		__asm__("nop");
-// 	}
-
-// 	// Never reaches here, but cleanup code can be included
-// 	transceiver_shutdown();
-// }
+	// Never reaches here, but cleanup code can be included
+	transceiver_shutdown();
+}
+#endif
 
 void off_mode(uint32_t seq)
 {
