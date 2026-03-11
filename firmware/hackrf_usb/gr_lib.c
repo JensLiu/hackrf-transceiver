@@ -214,6 +214,9 @@ void set_baseband_filter_bandwidth(const double bandwidth)
 }
 
 // FROM HACKRF HOST CODE
+// Store sample rate and frequency in radio struct while mode is OFF,
+// so that radio_switch_mode() inside transceiver_startup() can
+// re-apply them and reach rf_path_set_direction/sgpio_configure.
 int set_sample_rate(const double freq)
 {
 	const int MAX_N = 32;
@@ -275,21 +278,25 @@ int set_sample_rate(const double freq)
 	//				(uint32_t) (0.75 * freq_hz / divider)));
 	//	}
 	// In the firmware: usb_vendor_request_set_sample_rate_frac
-	//		if (sample_rate_frac_set(
-	//		    set_sample_r_params.freq_hz * 2,
-	//		    set_sample_r_params.divider)) {
-	//			usb_transfer_schedule_ack(endpoint->in);
-	//			return USB_REQUEST_STATUS_OK;
-	//		}
-	radio_set_sample_rate(
-		&radio,
-		RADIO_CHANNEL0,
-		RADIO_SAMPLE_RATE_CLOCKGEN,
-		(radio_sample_rate_t) {
-			.num = freq_hz * 2,
-			.div = divider,
-		});
-	sample_rate_frac_set(freq_hz * 2, divider);
+	//		radio_error_t result = radio_set_sample_rate(
+	//			&radio,
+	//			RADIO_CHANNEL0,
+	//			RADIO_SAMPLE_RATE_CLOCKGEN,
+	//			(radio_sample_rate_t) {
+	//				.num = set_sample_r_params.freq_hz * 2,
+	//				.div = set_sample_r_params.divider,
+	//		});
+	if (RADIO_OK !=
+	    radio_set_sample_rate(
+		    &radio,
+		    RADIO_CHANNEL0,
+		    RADIO_SAMPLE_RATE_CLOCKGEN,
+		    (radio_sample_rate_t) {
+			    .num = freq_hz * 2,
+			    .div = divider,
+		    })) {
+		uart_printf("standalone setup failed: set sample rate");
+	}
 	const uint32_t bw = _hackrf_compute_baseband_filter_bw(0.75 * freq_hz / divider);
 	uart_printf(
 		"set_sample_rate(%f) -> freq_hz=%u divider=%u, setting baseband filter bw to %u\n",
@@ -303,8 +310,7 @@ int set_sample_rate(const double freq)
 		    RADIO_CHANNEL0,
 		    RADIO_FILTER_BASEBAND,
 		    (radio_filter_t) {.hz = bw})) {
-		uart_printf(
-			"standalone RX setup failed: set sample rate and baseband filter\n");
+		uart_printf("standalone setup failed: set baseband filter\n");
 	}
 }
 
@@ -315,12 +321,14 @@ void set_centre_frequency(const double freq)
 	const uint64_t corr_freq = (uint64_t) (APPLY_PPM_CORR(freq, _freq_corr));
 	// hackrf_set_freq(freq_hz)
 	uart_printf("set frequency: %llu\n", (unsigned long long) corr_freq);
-	radio_set_frequency(
-		&radio,
-		RADIO_CHANNEL0,
-		RADIO_FREQUENCY_RF,
-		(radio_frequency_t) {.hz = corr_freq});
-	set_freq(corr_freq);
+	if (RADIO_OK !=
+	    radio_set_frequency(
+		    &radio,
+		    RADIO_CHANNEL0,
+		    RADIO_FREQUENCY_RF,
+		    (radio_frequency_t) {.hz = corr_freq})) {
+		uart_printf("standalone setup failed: set centre frequency\n");
+	}
 }
 
 void set_antenna_enable(const bool enable)

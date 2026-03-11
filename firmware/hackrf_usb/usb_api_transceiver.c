@@ -765,17 +765,16 @@ void tx_mode(uint32_t seq)
 {
 	uart_printf("tx mode");
 	init_sine_table();
-#if false
+	#if true
 	set_sample_rate(SAMPLE_RATE);
 	set_baseband_filter_bandwidth(15000000);
 	set_centre_frequency(CENTRE_FREQ);
 	tx_set_rf_gain(30);
 	tx_set_if_gain(40);
 	set_antenna_enable(false);
-#endif
-	// Start transceiver once
+	#endif
+	// Start transceiver once (puts M0 into TX_START, waiting for SGPIO)
 	transceiver_startup(TRANSCEIVER_MODE_TX);
-	baseband_streaming_enable(&sgpio_config); // < We definitely need this
 
 	// Phase tracking for waveform continuity
 	static uint32_t phase = 0;
@@ -783,28 +782,38 @@ void tx_mode(uint32_t seq)
 	// USB bulk transfer count initialization
 	uint32_t usb_count = 0;
 
-	// Continuously fill the USB bulk buffer with IQ data
-	bool started = false;
+	// Pre-fill the entire buffer before enabling SGPIO streaming.
+	// The M0 is in TX_START, blocked waiting for SGPIO interrupts that
+	// won't come until we call baseband_streaming_enable(). This gives
+	// us time to fill the buffer without a race.
+	while (usb_count < USB_BULK_BUFFER_SIZE) {
+		fill_data_buffer(
+			&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
+			USB_TRANSFER_SIZE,
+			&phase);
+		m0_state.m4_count += USB_TRANSFER_SIZE;
+		usb_count += USB_TRANSFER_SIZE;
+	}
+
+	// Buffer is full, now enable SGPIO so M0 starts consuming.
+	baseband_streaming_enable(&sgpio_config);
+	uint32_t last_m0_count = m0_state.m0_count;
+	// Continuously refill the buffer as M0 consumes data.
 	while (1) {
-		started = true;
 		if ((usb_count - m0_state.m0_count) <=
 		    USB_BULK_BUFFER_SIZE - USB_TRANSFER_SIZE) {
-			// Fill the buffer with your desired waveform
 			fill_data_buffer(
 				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
 				USB_TRANSFER_SIZE,
 				&phase);
-			// modulated in batch
 			m0_state.m4_count += USB_TRANSFER_SIZE;
 			usb_count += USB_TRANSFER_SIZE;
 		}
-		
-		if (started && m0_state.m0_count == 0) {
-			uart_printf("Stalled\n");
-		}
 
-		// Optional small delay
-		__asm__("nop");
+		if (m0_state.m0_count == last_m0_count) {
+			uart_printf("stalled\n");
+		}
+		last_m0_count = m0_state.m0_count;
 	}
 
 	// Never reaches here, but cleanup code can be included

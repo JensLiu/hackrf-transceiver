@@ -367,8 +367,29 @@ int main(void)
 	}
 
 	while (true) {
-#if false
+#if true
+		transceiver_request_t request;
+
+		// Briefly disable USB interrupt so that we can
+		// atomically retrieve both the transceiver mode
+		// and the mode change sequence number. They are
+		// changed together by request_transceiver_mode()
+		// called from the USB ISR.
+
+		nvic_disable_irq(NVIC_USB0_IRQ);
+		request = transceiver_request;
+		nvic_enable_irq(NVIC_USB0_IRQ);
+	#if true
 		tx_mode(0);
+	#else
+		switch (request.mode) {
+		case TRANSCEIVER_MODE_TX:
+			tx_mode(0);
+			break;
+		default:
+			break;
+		}
+	#endif
 #else
 		transceiver_request_t request;
 
