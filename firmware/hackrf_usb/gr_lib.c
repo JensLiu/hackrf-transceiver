@@ -186,7 +186,8 @@ uint32_t _bandwidth_clip(const double bandwidth)
 void set_baseband_filter_bandwidth(const double bandwidth)
 {
 	// compute best default value depending on sample rate (auto filter)
-	const uint32_t bw = _hackrf_compute_baseband_filter_bw(_bandwidth_clip(bandwidth));
+	const uint32_t bw =
+		_hackrf_compute_baseband_filter_bw(_bandwidth_clip(bandwidth));
 	// NOTE:
 	// In the host: hackrf_set_baseband_filter_bandwidth
 	// 	result = libusb_control_transfer(
@@ -280,6 +281,14 @@ int set_sample_rate(const double freq)
 	//			usb_transfer_schedule_ack(endpoint->in);
 	//			return USB_REQUEST_STATUS_OK;
 	//		}
+	radio_set_sample_rate(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_SAMPLE_RATE_CLOCKGEN,
+		(radio_sample_rate_t) {
+			.num = freq_hz * 2,
+			.div = divider,
+		});
 	sample_rate_frac_set(freq_hz * 2, divider);
 	const uint32_t bw = _hackrf_compute_baseband_filter_bw(0.75 * freq_hz / divider);
 	uart_printf(
@@ -306,6 +315,11 @@ void set_centre_frequency(const double freq)
 	const uint64_t corr_freq = (uint64_t) (APPLY_PPM_CORR(freq, _freq_corr));
 	// hackrf_set_freq(freq_hz)
 	uart_printf("set frequency: %llu\n", (unsigned long long) corr_freq);
+	radio_set_frequency(
+		&radio,
+		RADIO_CHANNEL0,
+		RADIO_FREQUENCY_RF,
+		(radio_frequency_t) {.hz = corr_freq});
 	set_freq(corr_freq);
 }
 
