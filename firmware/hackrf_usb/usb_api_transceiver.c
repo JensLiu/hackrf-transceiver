@@ -50,16 +50,10 @@
 #include "usb_api_sweep.h"
 #include <math.h>
 
-#define USB_TRANSFER_SIZE 0x4000
-
-// CUSTOM DEFS
+// CUSTOM IMPORTS
+#include "custom_config.h"
 #include "sine_table.h"
 #include "gr_lib.h"
-#define SAMPLE_RATE    5000000
-#define CENTRE_FREQ    915000000
-#define SINE_FREQ      100000
-#define TX_BIT_SAMPLES 1000
-#define TX_PATTERN_MAX_BITS 64U
 
 typedef struct {
 	uint32_t freq_mhz;
@@ -391,46 +385,6 @@ void request_transceiver_mode(transceiver_mode_t mode)
 	transceiver_request.seq++;
 }
 
-void fill_sine_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
-{
-	const uint32_t BLOCK_SAMPLES = 8192;              // samples per half-cycle
-	const uint32_t CYCLE_SAMPLES = BLOCK_SAMPLES * 2; // full sine+zero cycle
-	const uint32_t BYTES_PER_SAMPLE = 2;              // I + Q
-	const uint8_t MID_SCALE = 0;                      // "zero" for unsigned I/Q128
-
-	// phase increment to step through your sine table at the right rate:
-	const uint32_t phase_increment = (SINE_FREQ * SINE_TABLE_SIZE) / SAMPLE_RATE;
-
-	// static so they survive across back-to-back fill_sine_buffer() calls:
-	static uint32_t super_phase = 0; // 0…CYCLE_SAMPLES−1
-	static uint32_t table_phase = 0; // 0…SINE_TABLE_SIZE−1
-
-	uint32_t total_samples = len / BYTES_PER_SAMPLE;
-
-	for (uint32_t s = 0; s < total_samples; s++) {
-		uint32_t i = s * BYTES_PER_SAMPLE;
-
-		if (super_phase < BLOCK_SAMPLES) {
-			// --- sine part ---
-			uint32_t idx = table_phase;
-			buffer[i] = sine_table[2 * idx];         // I
-			buffer[i + 1] = sine_table[2 * idx + 1]; // Q
-		} else {
-			// --- zero part ---
-			buffer[i] = MID_SCALE;
-			buffer[i + 1] = MID_SCALE;
-		}
-		// advance through sine table
-		table_phase = (table_phase + phase_increment) % SINE_TABLE_SIZE;
-
-		// advance through the 8192+8192 super-cycle
-		super_phase++;
-		if (super_phase >= CYCLE_SAMPLES) {
-			super_phase = 0;
-		}
-	}
-}
-
 // Runtime TX pattern (host update path can be wired in later).
 static uint8_t tx_bit_pattern[TX_PATTERN_MAX_BITS];
 static uint32_t tx_bit_pattern_len = 0;
@@ -456,7 +410,7 @@ static void tx_set_bit_pattern(const uint8_t* bits, uint32_t len)
 
 static void tx_set_default_pattern(void)
 {
-	static const uint8_t default_pattern[] = {1, 1, 1, 1, 1, 1, 1, 1, 1};
+	static const uint8_t default_pattern[] = CUSTOM_BIT_PATTERN;
 	tx_set_bit_pattern(default_pattern, sizeof(default_pattern));
 }
 
@@ -467,25 +421,25 @@ void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 	const uint32_t SINE_TABLE_MASK = SINE_TABLE_SIZE - 1;
 
 	// phase increment through the sine table
-	const uint32_t phase_increment = (SINE_FREQ * SINE_TABLE_SIZE) / SAMPLE_RATE;
+	const uint32_t phase_increment = (SINE_FREQ * SINE_TABLE_SIZE) / TX_SAMPLE_RATE;
 
 	// persistent state
 	static uint32_t table_phase = 0;   // index into sine_table
 	static uint32_t sample_in_bit = 0; // 0…BIT_SAMPLES−1
 
-	if (tx_bit_pattern_len == 0) {
-		memset(buffer, 0, len);
-		return;
-	}
+	// if (tx_bit_pattern_len == 0) {
+	// 	memset(buffer, 0, len);
+	// 	return;
+	// }
 
 	uint32_t total_samples = len / BYTES_PER_SAMPLE;
-	if (len % BYTES_PER_SAMPLE != 0) {
-		// Handle the case where len is not a multiple of BYTES_PER_SAMPLE
-		uart_printf(
-			"Warning: buffer length %u is not a multiple of bytes per sample %u\n",
-			len,
-			BYTES_PER_SAMPLE);
-	}
+	// if (len % BYTES_PER_SAMPLE != 0) {
+	// 	// Handle the case where len is not a multiple of BYTES_PER_SAMPLE
+	// 	uart_printf(
+	// 		"Warning: buffer length %u is not a multiple of bytes per sample %u\n",
+	// 		len,
+	// 		BYTES_PER_SAMPLE);
+	// }
 
 	for (uint32_t s = 0; s < total_samples; s++) {
 		uint32_t i = s * BYTES_PER_SAMPLE;
@@ -713,6 +667,7 @@ void rx_signal_process(uint32_t usb_count)
 	}
 }
 
+#ifndef CUSTOM_RX_MODE
 void rx_mode(uint32_t seq)
 {
 	uint32_t usb_count = 0;
@@ -738,8 +693,257 @@ void rx_mode(uint32_t seq)
 
 	transceiver_shutdown();
 }
+#else
+static void rx_standalone_autostart(void)
+{
+	// set_sample_rate(SAMPLE_RATE);
+	// set_baseband_filter_bandwidth(BASEBAND_FILTER_BW);
+	// set_centre_frequency(CENTRE_FREQ);
+	// rx_set_rf_gain(RF_GAIN);
+	// rx_set_if_gain(IF_GAIN);
+	// rx_set_bb_gain(BB_GAIN);
 
-#if false
+	// if (RADIO_OK !=
+	//     radio_set_antenna(
+	// 	    &radio,
+	// 	    RADIO_CHANNEL0,
+	// 	    RADIO_ANTENNA_BIAS_TEE,
+	// 	    (radio_antenna_t) {.enable = false})) {
+	// 	uart_printf("standalone RX setup failed: antenna");
+	// 	return;
+	// }
+
+	// if (RADIO_OK != radio_set_trigger_enable(&radio, RADIO_CHANNEL0, false)) {
+	// 	uart_printf("standalone RX setup failed: trigger");
+	// 	return;
+	// }
+
+	request_transceiver_mode(TRANSCEIVER_MODE_RX);
+	uart_printf("standalone RX autostart requested\n");
+}
+
+void rx_mode(uint32_t seq)
+{
+	#ifdef RX_SAMPLE_RATE
+	set_sample_rate(RX_SAMPLE_RATE);
+	#endif
+	#ifdef RX_BASEBAND_FILTER_BW
+	set_baseband_filter_bandwidth(RX_BASEBAND_FILTER_BW);
+	#endif
+	#ifdef CENTRE_FREQ
+	set_centre_frequency(CENTRE_FREQ);
+	#endif
+	#ifdef RX_RF_GAIN
+	rx_set_rf_gain(RX_RF_GAIN);
+	#endif
+	#ifdef RX_IF_GAIN
+	rx_set_if_gain(RX_IF_GAIN);
+	#endif
+	#ifdef RX_ANTENNA_ENABLE
+	set_antenna_enable(RX_ANTENNA_ENABLE);
+	#endif
+
+	uint32_t usb_count = 0;
+	transceiver_startup(TRANSCEIVER_MODE_RX);
+	baseband_streaming_enable(&sgpio_config);
+
+	// Constants matching the transmitter
+	uint32_t sample_count = 0;
+	uint64_t mag2_sum = 0; // Sum of magnitude squared
+	bool current_bit = false;
+	uint8_t bit_buffer[USB_TRANSFER_SIZE]; // Buffer to store detected bits
+	uint32_t bit_buffer_index = 0;
+	uint8_t tx_buffer[USB_TRANSFER_SIZE]; // Separate buffer for USB transfers
+	uint32_t noise_floor = 0;
+
+	while (1) {
+		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
+			uint8_t* buffer =
+				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
+
+			for (uint32_t i = 0; i < USB_TRANSFER_SIZE; i += 2) {
+				int32_t I = (int8_t) buffer[i];
+				int32_t Q = (int8_t) buffer[i + 1];
+
+				uint32_t mag2 = I * I + Q * Q;
+				// uart_printf("%d\t", mag2);
+				mag2_sum += mag2;
+				sample_count++;
+
+				if (sample_count >= RX_BIT_SAMPLES) {
+					uint32_t mag2_avg = mag2_sum /
+						RX_BIT_SAMPLES; // TODO: use power of 2 for division efficiency
+
+					// Update noise floor (slow moving average)
+					noise_floor = (noise_floor * 15 + mag2_avg) / 16;
+
+					// Adaptive threshold
+					const uint32_t adaptive_threshold =
+						noise_floor + RX_THRESHOLD_MARGIN;
+
+					current_bit = (mag2_avg > adaptive_threshold);
+					// uart_printf("mag2_avg=%u noise_floor=%u threshold=%u bit=%d\n",
+					// 	mag2_avg,
+					// 	noise_floor,
+					// 	adaptive_threshold,
+					// 	current_bit);
+					// uart_printf("%d", current_bit);
+					// uart_printf("%d\t", mag2_avg);
+					// uart_printf("%d", current_bit);
+					bit_buffer[bit_buffer_index++] =
+						current_bit ? 1 : 0;
+
+					if (bit_buffer_index >= RX_BIT_PACKET_SIZE) {
+						memcpy(tx_buffer,
+						       bit_buffer,
+						       RX_BIT_PACKET_SIZE);
+
+						usb_transfer_schedule_block(
+							&usb_endpoint_bulk_in,
+							tx_buffer,
+							RX_BIT_PACKET_SIZE,
+							transceiver_bulk_transfer_complete,
+							NULL);
+
+						while (!usb_endpoint_bulk_in
+								.transfer_complete) {
+							__asm__("nop");
+						}
+
+						bit_buffer_index = 0;
+					}
+
+					sample_count = 0;
+					mag2_sum = 0;
+				}
+			}
+
+			// if (m0_state.num_shortfalls > 0) {
+			// 	uart_printf(
+			// 		"\nWarning: M0 shortfall count = %u\n",
+			// 		m0_state.num_shortfalls);
+			// }
+
+			usb_count += USB_TRANSFER_SIZE;
+			m0_state.m4_count += USB_TRANSFER_SIZE;
+		}
+	}
+
+	transceiver_shutdown();
+}
+
+// void rx_mode(uint32_t seq)
+// {
+// 	// set_sample_rate(RX_SAMPLE_RATE);
+// 	// set_freq(CENTRE_FREQ);
+// 	// max283x_set_lna_gain(&max283x, 40);
+// 	// rf_path_set_lna(&rf_path, 1);
+// 	// rf_path_set_antenna(&rf_path, 1);
+
+// 	#ifdef RX_SAMPLE_RATE
+// 	set_sample_rate(RX_SAMPLE_RATE);
+// 	#endif
+// 	#ifdef RX_BASEBAND_FILTER_BW
+// 	set_baseband_filter_bandwidth(RX_BASEBAND_FILTER_BW);
+// 	#endif
+// 	#ifdef CENTRE_FREQ
+// 	set_centre_frequency(CENTRE_FREQ);
+// 	#endif
+// 	#ifdef RX_RF_GAIN
+// 	rx_set_rf_gain(RX_RF_GAIN);
+// 	#endif
+// 	#ifdef RX_IF_GAIN
+// 	rx_set_if_gain(RX_IF_GAIN);
+// 	#endif
+// 	#ifdef RX_ANTENNA_ENABLE
+// 	set_antenna_enable(RX_ANTENNA_ENABLE);
+// 	#endif
+
+// 	uint32_t usb_count = 0;
+// 	transceiver_startup(TRANSCEIVER_MODE_RX);
+// 	baseband_streaming_enable(&sgpio_config);
+
+// 	// Constants matching the transmitter
+// 	uint32_t sample_count = 0;
+// 	uint64_t mag2_sum = 0; // Sum of magnitude squared
+// 	bool current_bit = false;
+// 	uint8_t bit_buffer[USB_TRANSFER_SIZE]; // Buffer to store detected bits
+// 	uint32_t bit_buffer_index = 0;
+// 	uint8_t tx_buffer[USB_TRANSFER_SIZE]; // Separate buffer for USB transfers
+
+// 	uint32_t noise_floor = 0;
+// 	const uint32_t THRESHOLD_MARGIN = 500;
+
+// 	while (1) {
+// 		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
+// 			uint8_t* buffer =
+// 				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
+
+// 			for (uint32_t i = 0; i < USB_TRANSFER_SIZE; i += 2) {
+// 				int32_t I = (int8_t) buffer[i];
+// 				int32_t Q = (int8_t) buffer[i + 1];
+
+// 				uint32_t mag2 = I * I + Q * Q;
+// 				mag2_sum += mag2;
+// 				sample_count++;
+
+// 				if (sample_count >= RX_BIT_SAMPLES) {
+// 					uint32_t mag2_avg = mag2_sum / RX_BIT_SAMPLES;
+
+// 					// Update noise floor (slow moving average)
+// 					noise_floor = (noise_floor * 15 + mag2_avg) / 16;
+
+// 					// Adaptive threshold
+// 					uint32_t adaptive_threshold =
+// 						noise_floor + THRESHOLD_MARGIN;
+
+// 					current_bit = (mag2_avg > adaptive_threshold);
+
+// 					bit_buffer[bit_buffer_index++] =
+// 						current_bit ? 1 : 0;
+
+// 					if (bit_buffer_index >= RX_BIT_PACKET_SIZE) {
+// 						memcpy(tx_buffer,
+// 						       bit_buffer,
+// 						       RX_BIT_PACKET_SIZE);
+
+// 						usb_transfer_schedule_block(
+// 							&usb_endpoint_bulk_in,
+// 							tx_buffer,
+// 							RX_BIT_PACKET_SIZE,
+// 							transceiver_bulk_transfer_complete,
+// 							NULL);
+
+// 						while (!usb_endpoint_bulk_in
+// 								.transfer_complete) {
+// 							__asm__("nop");
+// 						}
+
+// 						bit_buffer_index = 0;
+// 					}
+
+// 					if (current_bit) {
+// 						led_on(LED3);
+// 					} else {
+// 						led_off(LED3);
+// 					}
+
+// 					sample_count = 0;
+// 					mag2_sum = 0;
+// 				}
+// 			}
+
+// 			usb_count += USB_TRANSFER_SIZE;
+// 			m0_state.m4_count += USB_TRANSFER_SIZE;
+// 			// m0_state.m0_count += USB_TRANSFER_SIZE;
+// 		}
+// 	}
+
+// 	transceiver_shutdown();
+// }
+#endif
+
+#ifndef CUSTOM_TX_MODE
 void tx_mode(uint32_t seq)
 {
 	unsigned int usb_count = 0;
@@ -785,31 +989,30 @@ void tx_mode(uint32_t seq)
 	}
 
 	// Radio configuration
-	set_sample_rate(SAMPLE_RATE);
-	// set_baseband_filter_bandwidth(10000);
+	#ifdef TX_SAMPLE_RATE
+	set_sample_rate(TX_SAMPLE_RATE);
+	#endif
+	#ifdef TX_BASEBAND_FILTER_BW
+	set_baseband_filter_bandwidth(TX_BASEBAND_FILTER_BW);
+	#endif
+	#ifdef CENTRE_FREQ
 	set_centre_frequency(CENTRE_FREQ);
-	tx_set_rf_gain(30);
-	tx_set_if_gain(40);
-	set_antenna_enable(false);
+	#endif
+	#ifdef TX_RF_GAIN
+	tx_set_rf_gain(TX_RF_GAIN);
+	#endif
+	#ifdef TX_IF_GAIN
+	tx_set_if_gain(TX_IF_GAIN);
+	#endif
+	#ifdef TX_ANTENNA_ENABLE
+	set_antenna_enable(TX_ANTENNA_ENABLE);
+	#endif
 
 	// Start transceiver once (puts M0 into TX_START, waiting for SGPIO)
 	transceiver_startup(TRANSCEIVER_MODE_TX);
 
-	// Phase tracking for waveform continuity
-	static uint32_t phase = 0;
-
-	// USB bulk transfer count initialization
+	static uint32_t phase = 0; // Phase tracking for waveform continuity
 	uint32_t usb_count = 0;
-
-	// Prime the full ring buffer before SGPIO starts consuming samples.
-	// while (usb_count < USB_BULK_BUFFER_SIZE) {
-	// 	fill_data_buffer(
-	// 		&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
-	// 		USB_TRANSFER_SIZE,
-	// 		&phase);
-	// 	m0_state.m4_count += USB_TRANSFER_SIZE;
-	// 	usb_count += USB_TRANSFER_SIZE;
-	// }
 
 	baseband_streaming_enable(&sgpio_config);
 

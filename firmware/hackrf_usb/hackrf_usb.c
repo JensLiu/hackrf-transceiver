@@ -63,7 +63,10 @@
 #include "fpga.h"
 #include "selftest.h"
 #include "delay.h"
+
+// CUSTOM IMPORTS
 #include "uart.h"
+#include "custom_config.h"
 
 extern uint32_t __m0_start__;
 extern uint32_t __m0_end__;
@@ -367,7 +370,9 @@ int main(void)
 	}
 
 	while (true) {
-#if true
+#ifdef CUSTOM_RX_MODE
+		rx_mode(0);
+#elif defined CUSTOM_TX_MODE
 		tx_mode(0);
 #else
 		transceiver_request_t request;

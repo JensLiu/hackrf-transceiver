@@ -217,7 +217,7 @@ void set_baseband_filter_bandwidth(const double bandwidth)
 // Store sample rate and frequency in radio struct while mode is OFF,
 // so that radio_switch_mode() inside transceiver_startup() can
 // re-apply them and reach rf_path_set_direction/sgpio_configure.
-int set_sample_rate(const double freq)
+void set_sample_rate(const double freq)
 {
 	const int MAX_N = 32;
 	uint32_t freq_hz, divider;
@@ -311,6 +311,21 @@ int set_sample_rate(const double freq)
 		    RADIO_FILTER_BASEBAND,
 		    (radio_filter_t) {.hz = bw})) {
 		uart_printf("standalone setup failed: set baseband filter\n");
+	}
+}
+
+void set_sample_rate_direct(const double freq, const double divider)
+{
+	if (RADIO_OK !=
+	    radio_set_sample_rate(
+		    &radio,
+		    RADIO_CHANNEL0,
+		    RADIO_SAMPLE_RATE_CLOCKGEN,
+		    (radio_sample_rate_t) {
+			    .num = freq,
+			    .div = divider,
+		    })) {
+		uart_printf("standalone setup failed: set sample rate");
 	}
 }
 
