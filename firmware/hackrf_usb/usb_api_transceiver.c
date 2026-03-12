@@ -55,10 +55,12 @@
 // CUSTOM DEFS
 #include "sine_table.h"
 #include "gr_lib.h"
-#define SAMPLE_RATE    10000000
+#define SAMPLE_RATE    5000000
 #define CENTRE_FREQ    915000000
 #define SINE_FREQ      100000
 #define TX_BIT_SAMPLES 1000
+#define TX_BIT_CHUNK_SIZE   (TX_BIT_SAMPLES * 2U)
+#define TX_PATTERN_MAX_BITS 64U
 
 typedef struct {
 	uint32_t freq_mhz;
@@ -414,14 +416,13 @@ void fill_sine_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 			uint32_t idx = table_phase;
 			buffer[i] = sine_table[2 * idx];         // I
 			buffer[i + 1] = sine_table[2 * idx + 1]; // Q
-
-			// advance through sine table
-			table_phase = (table_phase + phase_increment) % SINE_TABLE_SIZE;
 		} else {
 			// --- zero part ---
 			buffer[i] = MID_SCALE;
 			buffer[i + 1] = MID_SCALE;
 		}
+		// advance through sine table
+		table_phase = (table_phase + phase_increment) % SINE_TABLE_SIZE;
 
 		// advance through the 8192+8192 super-cycle
 		super_phase++;
@@ -436,10 +437,54 @@ static uint8_t* dynamic_bit_pattern = NULL;
 static size_t dynamic_pattern_len = 0;
 static bool pattern_sent_once = false; // New flag to track if pattern was sent once
 
+// void send_data(uint8_t* output_buffer, uint32_t output_buffer_len, uint32_t* _unused_phase)
+// {
+// 	const uint32_t BYTES_PER_SAMPLE = 2; // I + Q
+
+// 	// phase increment through the sine table
+// 	static const uint32_t phase_increment = (SINE_FREQ * SINE_TABLE_SIZE) / SAMPLE_RATE;
+
+// 	// persistent state
+// 	static uint32_t current_phase = 0; // index into sine_table
+// 	static uint32_t sample_in_bit = 0; // 0…BIT_SAMPLES−1
+// 	static uint32_t bit_index = 0;     // 0…dynamic_pattern_len−1
+// 	static const uint8_t dynamic_bit_pattern[] = {1, 0, 1, 0, 1, 0, 1, 0};
+// 	static uint32_t dynamic_pattern_len =
+// 		sizeof(dynamic_bit_pattern) / sizeof(*dynamic_bit_pattern);
+
+// 	for (uint32_t i = 0; i < output_buffer_len; i += BYTES_PER_SAMPLE) {
+// 		// TODO: 2 u8 multiplication or branch prediction, which one is faster?
+// #if true
+// 		if (dynamic_bit_pattern[bit_index]) {
+// 			// — "1": sine output
+// 			output_buffer[i] = sine_table[2 * current_phase];
+// 			output_buffer[i + 1] = sine_table[2 * current_phase + 1];
+// 		} else {
+// 			// — "0": flat mid-scale
+// 			output_buffer[i] = 0;
+// 			output_buffer[i + 1] = 0;
+// 		}
+// #else
+// 		output_buffer[i] =
+// 			dynamic_bit_pattern[bit_index] * sine_table[2 * current_phase];
+// 		output_buffer[i + 1] = dynamic_bit_pattern[bit_index] *
+// 			sine_table[2 * current_phase + 1];
+// #endif
+// 		current_phase = (current_phase + phase_increment) % SINE_TABLE_SIZE;
+
+// 		// advance sample count; after BIT_SAMPLES, move to next bit
+// 		if (++sample_in_bit >= TX_BIT_SAMPLES) {
+// 			sample_in_bit = 0;
+// 			bit_index = (bit_index + 1) % dynamic_pattern_len;
+// 		}
+// 	}
+// }
+
 void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 {
 	const uint32_t BYTES_PER_SAMPLE = 2; // I + Q
 	const uint8_t MID_SCALE = 0;         // unsigned zero level
+	const uint32_t SINE_TABLE_MASK = SINE_TABLE_SIZE - 1;
 
 	// phase increment through the sine table
 	const uint32_t phase_increment = (SINE_FREQ * SINE_TABLE_SIZE) / SAMPLE_RATE;
@@ -462,29 +507,35 @@ void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 		return;
 	}
 */
-	static const uint8_t dynamic_bit_pattern[] = {1, 1, 1, 0, 1, 0, 1, 0};
+	static const uint8_t dynamic_bit_pattern[] = {1, 1, 1, 1, 1, 1, 1, 1};
 #define dynamic_pattern_len (sizeof(dynamic_bit_pattern) / sizeof(*dynamic_bit_pattern))
 
 	uint32_t total_samples = len / BYTES_PER_SAMPLE;
+	if (len % BYTES_PER_SAMPLE != 0) {
+		// Handle the case where len is not a multiple of BYTES_PER_SAMPLE
+		uart_printf(
+			"Warning: buffer length %u is not a multiple of bytes per sample %u\n",
+			len,
+			BYTES_PER_SAMPLE);
+	}
 
 	for (uint32_t s = 0; s < total_samples; s++) {
 		uint32_t i = s * BYTES_PER_SAMPLE;
 		if (dynamic_bit_pattern[bit_index]) {
 			// — "1": sine output
-			uint32_t ti = table_phase % SINE_TABLE_SIZE;
-			buffer[i] = sine_table[2 * ti];
-			buffer[i + 1] = sine_table[2 * ti + 1];
+			buffer[i] = sine_table[2 * table_phase];
+			buffer[i + 1] = sine_table[2 * table_phase + 1];
 		} else {
 			// — "0": flat mid-scale
 			buffer[i] = MID_SCALE;
 			buffer[i + 1] = MID_SCALE;
 		}
-		table_phase = (table_phase + phase_increment) % SINE_TABLE_SIZE;
+		table_phase = (table_phase + phase_increment) & SINE_TABLE_MASK;
 
 		// advance sample count; after BIT_SAMPLES, move to next bit
 		if (++sample_in_bit >= TX_BIT_SAMPLES) {
 			sample_in_bit = 0;
-			bit_index = (bit_index + 1) % dynamic_pattern_len;
+			bit_index = (bit_index + 1) & (dynamic_pattern_len - 1);
 
 			// If we've completed one full pattern, set the flag
 			if (bit_index == 0) {
@@ -492,6 +543,68 @@ void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 			}
 		}
 	}
+}
+
+static uint8_t tx_one_chunk[TX_BIT_CHUNK_SIZE];
+static uint8_t tx_zero_chunk[TX_BIT_CHUNK_SIZE];
+static bool tx_chunks_ready = false;
+static uint8_t tx_bit_pattern[TX_PATTERN_MAX_BITS];
+static uint32_t tx_bit_pattern_len = 0;
+static uint32_t tx_bit_pattern_index = 0;
+
+static void tx_ring_write(const uint32_t usb_count, const uint8_t* src, const uint32_t len)
+{
+	const uint32_t offset = usb_count & USB_BULK_BUFFER_MASK;
+	const uint32_t first_len = USB_BULK_BUFFER_SIZE - offset;
+
+	if (len <= first_len) {
+		memcpy(&usb_bulk_buffer[offset], src, len);
+	} else {
+		memcpy(&usb_bulk_buffer[offset], src, first_len);
+		memcpy(&usb_bulk_buffer[0], src + first_len, len - first_len);
+	}
+}
+
+static void tx_set_bit_pattern(const uint8_t* bits, uint32_t len)
+{
+	if ((bits == NULL) || (len == 0)) {
+		return;
+	}
+
+	if (len > TX_PATTERN_MAX_BITS) {
+		len = TX_PATTERN_MAX_BITS;
+	}
+
+	for (uint32_t i = 0; i < len; i++) {
+		tx_bit_pattern[i] = bits[i] ? 1 : 0;
+	}
+
+	tx_bit_pattern_len = len;
+	tx_bit_pattern_index = 0;
+}
+
+static void tx_set_default_pattern(void)
+{
+	static const uint8_t default_pattern[] = {1, 1, 0};
+	tx_set_bit_pattern(default_pattern, sizeof(default_pattern));
+}
+
+static void init_tx_bit_chunks(void)
+{
+	const uint32_t BYTES_PER_SAMPLE = 2;
+	const uint32_t SINE_TABLE_MASK = SINE_TABLE_SIZE - 1;
+	const uint32_t phase_increment = (SINE_FREQ * SINE_TABLE_SIZE) / SAMPLE_RATE;
+	uint32_t table_phase = 0;
+
+	for (uint32_t i = 0; i < TX_BIT_CHUNK_SIZE; i += BYTES_PER_SAMPLE) {
+		tx_one_chunk[i] = sine_table[2 * table_phase];
+		tx_one_chunk[i + 1] = sine_table[2 * table_phase + 1];
+		tx_zero_chunk[i] = 0;
+		tx_zero_chunk[i + 1] = 0;
+		table_phase = (table_phase + phase_increment) & SINE_TABLE_MASK;
+	}
+
+	tx_chunks_ready = true;
 }
 
 void transceiver_shutdown(void)
@@ -765,58 +878,56 @@ void tx_mode(uint32_t seq)
 {
 	uart_printf("tx mode");
 	init_sine_table();
-	#if true
+	if (!tx_chunks_ready) {
+		init_tx_bit_chunks();
+	}
+	if (tx_bit_pattern_len == 0) {
+		tx_set_default_pattern();
+	}
+
+	// Radio configuration
 	set_sample_rate(SAMPLE_RATE);
-	set_baseband_filter_bandwidth(15000000);
+	// set_baseband_filter_bandwidth(10000);
 	set_centre_frequency(CENTRE_FREQ);
 	tx_set_rf_gain(30);
 	tx_set_if_gain(40);
 	set_antenna_enable(false);
-	#endif
+
 	// Start transceiver once (puts M0 into TX_START, waiting for SGPIO)
 	transceiver_startup(TRANSCEIVER_MODE_TX);
-
-	// Phase tracking for waveform continuity
-	static uint32_t phase = 0;
 
 	// USB bulk transfer count initialization
 	uint32_t usb_count = 0;
 
-	// Pre-fill the entire buffer before enabling SGPIO streaming.
-	// The M0 is in TX_START, blocked waiting for SGPIO interrupts that
-	// won't come until we call baseband_streaming_enable(). This gives
-	// us time to fill the buffer without a race.
+	// Prime the full ring buffer before SGPIO starts consuming samples.
 	while (usb_count < USB_BULK_BUFFER_SIZE) {
-		fill_data_buffer(
-			&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
-			USB_TRANSFER_SIZE,
-			&phase);
-		m0_state.m4_count += USB_TRANSFER_SIZE;
-		usb_count += USB_TRANSFER_SIZE;
+		const uint8_t bit = tx_bit_pattern[tx_bit_pattern_index];
+		const uint8_t* src = bit ? tx_one_chunk : tx_zero_chunk;
+
+		tx_ring_write(usb_count, src, TX_BIT_CHUNK_SIZE);
+		m0_state.m4_count += TX_BIT_CHUNK_SIZE;
+		usb_count += TX_BIT_CHUNK_SIZE;
+		tx_bit_pattern_index = (tx_bit_pattern_index + 1) % tx_bit_pattern_len;
 	}
 
-	// Buffer is full, now enable SGPIO so M0 starts consuming.
 	baseband_streaming_enable(&sgpio_config);
-	uint32_t last_m0_count = m0_state.m0_count;
-	// Continuously refill the buffer as M0 consumes data.
-	while (1) {
-		if ((usb_count - m0_state.m0_count) <=
-		    USB_BULK_BUFFER_SIZE - USB_TRANSFER_SIZE) {
-			fill_data_buffer(
-				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
-				USB_TRANSFER_SIZE,
-				&phase);
-			m0_state.m4_count += USB_TRANSFER_SIZE;
-			usb_count += USB_TRANSFER_SIZE;
-		}
 
-		if (m0_state.m0_count == last_m0_count) {
-			uart_printf("stalled\n");
+	while (transceiver_request.seq == seq) {
+		// Top off all available space each pass to maximize producer headroom.
+		while ((usb_count - m0_state.m0_count) <=
+		       USB_BULK_BUFFER_SIZE - TX_BIT_CHUNK_SIZE) {
+			const uint8_t bit = tx_bit_pattern[tx_bit_pattern_index];
+			const uint8_t* src = bit ? tx_one_chunk : tx_zero_chunk;
+
+			tx_ring_write(usb_count, src, TX_BIT_CHUNK_SIZE);
+
+			// M4 publishes produced bytes; M0 advances m0_count as it consumes.
+			m0_state.m4_count += TX_BIT_CHUNK_SIZE;
+			usb_count += TX_BIT_CHUNK_SIZE;
+			tx_bit_pattern_index = (tx_bit_pattern_index + 1) % tx_bit_pattern_len;
 		}
-		last_m0_count = m0_state.m0_count;
 	}
 
-	// Never reaches here, but cleanup code can be included
 	transceiver_shutdown();
 }
 #endif
