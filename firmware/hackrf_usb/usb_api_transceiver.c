@@ -62,7 +62,7 @@
 // CUSTOM IMPORTS
 #include "custom_config.h"
 #include "uart.h"
-// #include "gr_lib.h"
+#include "gr_lib.h"
 
 extern uint32_t __m0_start__;
 extern uint32_t __m0_end__;
@@ -577,30 +577,30 @@ void rx_mode(uint32_t seq)
 #else
 void rx_mode(uint32_t seq)
 {
-	sample_rate_frac_set(TX_SAMPLE_RATE, 1);
-	// baseband_filter_bandwidth_set(10000);
-	set_freq(CENTRE_FREQ);
-	max283x_set_lna_gain(&max283x, 40);
-	rf_path_set_lna(&rf_path, 1);
-	rf_path_set_antenna(&rf_path, 1);
-	// #ifdef RX_SAMPLE_RATE
-	// set_sample_rate(RX_SAMPLE_RATE);
-	// #endif
-	// #ifdef RX_BASEBAND_FILTER_BW
-	// set_baseband_filter_bandwidth(RX_BASEBAND_FILTER_BW);
-	// #endif
-	// #ifdef CENTRE_FREQ
-	// set_centre_frequency(CENTRE_FREQ);
-	// #endif
-	// #ifdef RX_RF_GAIN
-	// rx_set_rf_gain(RX_RF_GAIN);
-	// #endif
-	// #ifdef RX_IF_GAIN
-	// rx_set_if_gain(RX_IF_GAIN);
-	// #endif
-	// #ifdef RX_ANTENNA_ENABLE
-	// set_antenna_enable(RX_ANTENNA_ENABLE);
-	// #endif
+	// sample_rate_frac_set(TX_SAMPLE_RATE, 1);
+	// // baseband_filter_bandwidth_set(10000);
+	// set_freq(CENTRE_FREQ);
+	// max283x_set_lna_gain(&max283x, 40);
+	// rf_path_set_lna(&rf_path, 1);
+	// rf_path_set_antenna(&rf_path, 1);
+	#ifdef RX_SAMPLE_RATE
+	set_sample_rate(RX_SAMPLE_RATE);
+	#endif
+	#ifdef RX_BASEBAND_FILTER_BW
+	set_baseband_filter_bandwidth(RX_BASEBAND_FILTER_BW);
+	#endif
+	#ifdef CENTRE_FREQ
+	set_centre_frequency(CENTRE_FREQ);
+	#endif
+	#ifdef RX_RF_GAIN
+	rx_set_rf_gain(RX_RF_GAIN);
+	#endif
+	#ifdef RX_IF_GAIN
+	rx_set_if_gain(RX_IF_GAIN);
+	#endif
+	#ifdef RX_ANTENNA_ENABLE
+	set_antenna_enable(RX_ANTENNA_ENABLE);
+	#endif
 
 	uint32_t usb_count = 0;
 	transceiver_startup(TRANSCEIVER_MODE_RX);

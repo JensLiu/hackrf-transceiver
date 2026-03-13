@@ -9,17 +9,19 @@
 // RADIO PARAMETERS
 #define IN_PROGRESS
 #ifdef IN_PROGRESS
-	#define TX_SAMPLE_RATE      5000000
-	#define RX_SAMPLE_RATE      5000000
-	#define CENTRE_FREQ         915000000
-	#define SINE_FREQ           100000
-	#define TX_BIT_SAMPLES      1000
-	#define RX_BIT_SAMPLES      200 // < needs adjusting
+	#define TX_SAMPLE_RATE 5000000
+	#define RX_SAMPLE_RATE 5000000
+	#define CENTRE_FREQ    915000000
+	#define SINE_FREQ      100000
+	// #define TX_BIT_SAMPLES      1000
+	// #define RX_BIT_SAMPLES      200 /* < needs adjusting */
+	#define RX_BIT_SAMPLES      20000000
+	#define TX_BIT_SAMPLES      10000000
 	#define RX_THRESHOLD_MARGIN 20
 	#define TX_RF_GAIN          30
 	#define TX_IF_GAIN          47
-	#define RX_IF_GAIN          40 // < needs adjusting
-	#define RX_RF_GAIN          30 // < needs adjusting
+	#define RX_IF_GAIN          40 /* < needs adjusting */
+	#define RX_RF_GAIN          30 /* < needs adjusting */
 	#define TX_ANTENNA_ENABLE   false
 	#define RX_ANTENNA_ENABLE   false
 #else
