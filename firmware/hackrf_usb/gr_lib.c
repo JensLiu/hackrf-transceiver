@@ -16,6 +16,15 @@
 #include <math.h>
 #include <unistd.h>
 
+#define OLD_FIRMWARE
+
+#ifdef OLD_FIRMWARE
+uint32_t abs(uint32_t x)
+{
+	return (x < 0) ? -x : x;
+}
+#endif
+
 // MAPPING FROM THE GR-OSMOSDR PROJECT
 void rx_set_if_gain(const uint32_t gain)
 {
@@ -26,6 +35,9 @@ void rx_set_if_gain(const uint32_t gain)
 	const uint32_t clip_gain = (gain >= 40) ? 40 : ((uint32_t) (round(gain / 8))) * 8;
 	const uint8_t value = (uint8_t) clip_gain;
 	uart_printf("set rx if gain: %d -> %d\n", gain, value);
+#ifdef OLD_FIRMWARE
+	hackrf_ui()->set_bb_lna_gain(value);
+#else
 	if (RADIO_OK !=
 	    radio_set_gain(
 		    &radio,
@@ -34,6 +46,7 @@ void rx_set_if_gain(const uint32_t gain)
 		    (radio_gain_t) {.db = value})) {
 		uart_printf("standalone RX setup failed: IF gain\n");
 	}
+#endif
 }
 
 void rx_set_rf_gain(const uint32_t gain)
@@ -43,6 +56,9 @@ void rx_set_rf_gain(const uint32_t gain)
 	//	}
 	const uint8_t value = (gain >= 14) ? 1 : 0;
 	uart_printf("set rx rf gain: %d -> value=%u\n", gain, value);
+#ifdef OLD_FIRMWARE
+	rf_path_set_lna(&rf_path, value);
+#else
 	if (RADIO_OK !=
 	    radio_set_gain(
 		    &radio,
@@ -51,6 +67,7 @@ void rx_set_rf_gain(const uint32_t gain)
 		    (radio_gain_t) {.enable = value})) {
 		uart_printf("standalone RX setup failed: RF Gain\n");
 	}
+#endif
 }
 
 void rx_set_bb_gain(const double gain)
@@ -62,6 +79,11 @@ void rx_set_bb_gain(const double gain)
 		(gain >= 62) ? 62 : ((uint32_t) ((round((double) gain / 2))) * 2);
 	const uint8_t value = (uint8_t) clip_gain;
 	uart_printf("set rx bb gain: %d -> %d\n", gain, value);
+#ifdef OLD_FIRMWARE
+	if (max283x_set_vga_gain(&max283x, value)) {
+		hackrf_ui()->set_bb_vga_gain(value);
+	}
+#else
 	if (RADIO_OK !=
 	    radio_set_gain(
 		    &radio,
@@ -70,6 +92,7 @@ void rx_set_bb_gain(const double gain)
 		    (radio_gain_t) {.db = value})) {
 		uart_printf("standalone RX setup failed: BB Gain\n");
 	}
+#endif
 }
 
 void tx_set_rf_gain(const uint32_t gain)
@@ -79,6 +102,9 @@ void tx_set_rf_gain(const uint32_t gain)
 	// 	}
 	const uint8_t value = (gain >= 14) ? 1 : 0;
 	uart_printf("set tx rf gain: %d -> %d\n", gain, value);
+#ifdef OLD_FIRMWARE
+	rf_path_set_lna(&rf_path, value);
+#else
 	if (RADIO_OK !=
 	    radio_set_gain(
 		    &radio,
@@ -87,6 +113,7 @@ void tx_set_rf_gain(const uint32_t gain)
 		    (radio_gain_t) {.db = value})) {
 		uart_printf("standalone TX setup failed: RF Gain\n");
 	}
+#endif
 }
 
 void tx_set_if_gain(const double gain)
@@ -96,6 +123,11 @@ void tx_set_if_gain(const double gain)
 	// }
 	const uint8_t value = (gain >= 47) ? 47 : gain;
 	uart_printf("set tx if gain: %d -> %d\n", gain, value);
+#ifdef OLD_FIRMWARE
+	if (max283x_set_txvga_gain(&max283x, value)) {
+		hackrf_ui()->set_bb_tx_vga_gain(value);
+	}
+#else
 	if (radio_set_gain(
 		    &radio,
 		    RADIO_CHANNEL0,
@@ -103,6 +135,7 @@ void tx_set_if_gain(const double gain)
 		    (radio_gain_t) {.db = value})) {
 		hackrf_ui()->set_bb_tx_vga_gain(value);
 	}
+#endif
 }
 
 // FROM HACKRF HOST CODE
@@ -203,6 +236,9 @@ void set_baseband_filter_bandwidth(const double bandwidth)
 	// In the Firmware: usb_vendor_request_set_baseband_filter_bandwidth
 	// 		const uint32_t bandwidth = (endpoint->setup.index << 16) | endpoint->setup.value;
 	uart_printf("set baseband filter bandwidth (%f) -> bw = %d\n", bandwidth, bw);
+#ifdef OLD_FIRMWARE
+	baseband_filter_bandwidth_set(bw);
+#else
 	if (RADIO_OK !=
 	    radio_set_filter(
 		    &radio,
@@ -211,6 +247,7 @@ void set_baseband_filter_bandwidth(const double bandwidth)
 		    (radio_filter_t) {.hz = bandwidth})) {
 		uart_printf("standalone RX setup failed: baseband filter\n");
 	}
+#endif
 }
 
 // FROM HACKRF HOST CODE
@@ -255,37 +292,40 @@ void set_sample_rate(const double freq)
 	freq_hz = (uint32_t) (freq * i + 0.5);
 	divider = i;
 
-	// uart_printf("freq_hz: %d, divider: %d\n", freq_hz, divider);
-	// NOTE:
-	//	 In the host: hackrf_set_sample_rate_manual(device, freq_hz, divider);
-	//	result = libusb_control_transfer(
-	//		device->usb_device,
-	//		LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR |
-	//			LIBUSB_RECIPIENT_DEVICE,
-	//		HACKRF_VENDOR_REQUEST_SAMPLE_RATE_SET,
-	//		0,
-	//		0,
-	//		(unsigned char*) &set_fracrate_params,
-	//		length,
-	//		0);
-	//	if (result < length) {
-	//		last_libusb_error = result;
-	//		return HACKRF_ERROR_LIBUSB;
-	//	} else {
-	//		return hackrf_set_baseband_filter_bandwidth(
-	//			device,
-	//			hackrf_compute_baseband_filter_bw(
-	//				(uint32_t) (0.75 * freq_hz / divider)));
-	//	}
-	// In the firmware: usb_vendor_request_set_sample_rate_frac
-	//		radio_error_t result = radio_set_sample_rate(
-	//			&radio,
-	//			RADIO_CHANNEL0,
-	//			RADIO_SAMPLE_RATE_CLOCKGEN,
-	//			(radio_sample_rate_t) {
-	//				.num = set_sample_r_params.freq_hz * 2,
-	//				.div = set_sample_r_params.divider,
-	//		});
+// uart_printf("freq_hz: %d, divider: %d\n", freq_hz, divider);
+// NOTE:
+//	 In the host: hackrf_set_sample_rate_manual(device, freq_hz, divider);
+//	result = libusb_control_transfer(
+//		device->usb_device,
+//		LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR |
+//			LIBUSB_RECIPIENT_DEVICE,
+//		HACKRF_VENDOR_REQUEST_SAMPLE_RATE_SET,
+//		0,
+//		0,
+//		(unsigned char*) &set_fracrate_params,
+//		length,
+//		0);
+//	if (result < length) {
+//		last_libusb_error = result;
+//		return HACKRF_ERROR_LIBUSB;
+//	} else {
+//		return hackrf_set_baseband_filter_bandwidth(
+//			device,
+//			hackrf_compute_baseband_filter_bw(
+//				(uint32_t) (0.75 * freq_hz / divider)));
+//	}
+// In the firmware: usb_vendor_request_set_sample_rate_frac
+//		radio_error_t result = radio_set_sample_rate(
+//			&radio,
+//			RADIO_CHANNEL0,
+//			RADIO_SAMPLE_RATE_CLOCKGEN,
+//			(radio_sample_rate_t) {
+//				.num = set_sample_r_params.freq_hz * 2,
+//				.div = set_sample_r_params.divider,
+//		});
+#ifdef OLD_FIRMWARE
+	sample_rate_frac_set(freq_hz * 2, divider);
+#else
 	if (RADIO_OK !=
 	    radio_set_sample_rate(
 		    &radio,
@@ -312,10 +352,13 @@ void set_sample_rate(const double freq)
 		    (radio_filter_t) {.hz = bw})) {
 		uart_printf("standalone setup failed: set baseband filter\n");
 	}
+#endif
 }
 
 void set_sample_rate_direct(const double freq, const double divider)
 {
+#ifdef OLD_FIRMWARE
+#else
 	if (RADIO_OK !=
 	    radio_set_sample_rate(
 		    &radio,
@@ -327,11 +370,15 @@ void set_sample_rate_direct(const double freq, const double divider)
 		    })) {
 		uart_printf("standalone setup failed: set sample rate");
 	}
+#endif
 }
 
 void set_centre_frequency(const double freq)
 {
-#define APPLY_PPM_CORR(val, ppm) ((val) * (1.0 + (ppm) * 0.000001))
+#ifdef OLD_FIRMWARE
+	set_freq(freq);
+#else
+	#define APPLY_PPM_CORR(val, ppm) ((val) * (1.0 + (ppm) * 0.000001))
 	const double _freq_corr = 0;
 	const uint64_t corr_freq = (uint64_t) (APPLY_PPM_CORR(freq, _freq_corr));
 	// hackrf_set_freq(freq_hz)
@@ -344,10 +391,14 @@ void set_centre_frequency(const double freq)
 		    (radio_frequency_t) {.hz = corr_freq})) {
 		uart_printf("standalone setup failed: set centre frequency\n");
 	}
+#endif
 }
 
 void set_antenna_enable(const bool enable)
 {
+#ifdef OLD_FIRMWARE
+	rf_path_set_antenna(&rf_path, enable);
+#else
 	if (RADIO_OK !=
 	    radio_set_antenna(
 		    &radio,
@@ -356,4 +407,5 @@ void set_antenna_enable(const bool enable)
 		    (radio_antenna_t) {.enable = enable})) {
 		uart_printf("standalone RX setup failed: antenna enable\n");
 	}
+#endif
 }

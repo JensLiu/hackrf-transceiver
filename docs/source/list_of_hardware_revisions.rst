@@ -2,15 +2,11 @@
 Hardware Revisions
 ================================================
 
-Hardware revisions exist mainly to deal with changes in component availability. Each revision of a product meets the same performance specifications that are measured in the factory.
+HackRF One hardware revisions exist mainly to deal with changes in component availability. Each of the revisions meet the same performance specifications that are measured in the factory. 
 
-HackRF Pro
-~~~~~~~~~~
 
-The initial production revision of HackRF Pro is r1.2.1.
-
-HackRF One
-~~~~~~~~~~
+List of Hardware Revisions
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 HackRF One r1–r4
 ^^^^^^^^^^^^^^^^

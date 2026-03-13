@@ -27,13 +27,11 @@
 #include "gpio.h"
 
 typedef struct jtag_gpio_t {
-	gpio_t gpio_tck;
-#ifndef PRALINE
 	gpio_t gpio_tms;
+	gpio_t gpio_tck;
 	gpio_t gpio_tdi;
 	gpio_t gpio_tdo;
-#endif
-#if (defined HACKRF_ONE || defined PRALINE)
+#ifdef HACKRF_ONE
 	gpio_t gpio_pp_tms;
 	gpio_t gpio_pp_tdo;
 #endif

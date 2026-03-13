@@ -24,7 +24,7 @@
 
 #include <stddef.h>
 
-void gpio_init(void)
+void gpio_init()
 {
 	for (size_t i = 0; i < 8; i++) {
 		GPIO_LPC_PORT(i)->dir = 0;
@@ -43,7 +43,7 @@ void gpio_clear(gpio_t gpio)
 
 void gpio_toggle(gpio_t gpio)
 {
-	gpio->port->inv = gpio->mask;
+	gpio->port->not = gpio->mask;
 }
 
 void gpio_output(gpio_t gpio)

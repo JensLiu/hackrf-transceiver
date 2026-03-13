@@ -2,7 +2,8 @@
 set -e
 git submodule init
 git submodule update
-cd firmware/hackrf_usb
-cmake -B build
-cmake --build build
-cd ../..
+mkdir firmware/hackrf_usb/build
+cd firmware/hackrf_usb/build
+cmake ..
+make
+cd ../../..

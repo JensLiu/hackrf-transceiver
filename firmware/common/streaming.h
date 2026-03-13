@@ -26,6 +26,12 @@
 
 #include <sgpio.h>
 
+
+typedef int16_t sample_t;
+
+typedef sample_t* (*sample_tx_callback_t)(void);
+extern sample_tx_callback_t sample_tx_callback;
+
 void baseband_streaming_enable(sgpio_config_t* const sgpio_config);
 void baseband_streaming_disable(sgpio_config_t* const sgpio_config);
 

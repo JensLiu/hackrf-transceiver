@@ -78,7 +78,7 @@ const hackrf_ui_t* hackrf_ui(void)
 {
 	/* Detect on first use. If no UI hardware is detected, use a stub function table. */
 	if (ui == NULL && ui_enabled) {
-#if (defined HACKRF_ONE || defined PRALINE)
+#ifdef HACKRF_ONE
 		if (portapack_hackrf_ui_init) {
 			ui = portapack_hackrf_ui_init();
 		}

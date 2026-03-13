@@ -33,15 +33,11 @@
 
 #include <libopencm3/lpc43xx/m4/nvic.h>
 
-#define MIN(x, y)        ((x) < (y) ? (x) : (y))
-#define MAX(x, y)        ((x) > (y) ? (x) : (y))
-#define FREQ_GRANULARITY 1000000
-#define MAX_RANGES       10
-#ifndef PRALINE
-	#define THROWAWAY_BUFFERS 2
-#else
-	#define THROWAWAY_BUFFERS 1
-#endif
+#define MIN(x, y)         ((x) < (y) ? (x) : (y))
+#define MAX(x, y)         ((x) > (y) ? (x) : (y))
+#define FREQ_GRANULARITY  1000000
+#define MAX_RANGES        10
+#define THROWAWAY_BUFFERS 2
 
 static uint64_t sweep_freq;
 static uint16_t frequencies[MAX_RANGES * 2];
@@ -92,11 +88,7 @@ usb_request_status_t usb_vendor_request_init_sweep(
 				((uint16_t) (data[10 + i * 2]) << 8) + data[9 + i * 2];
 		}
 		sweep_freq = (uint64_t) frequencies[0] * FREQ_GRANULARITY;
-		radio_set_frequency(
-			&radio,
-			RADIO_CHANNEL0,
-			RADIO_FREQUENCY_RF,
-			(radio_frequency_t){.hz = sweep_freq + offset});
+		set_freq(sweep_freq + offset);
 		usb_transfer_schedule_ack(endpoint->in);
 	}
 	return USB_REQUEST_STATUS_OK;
@@ -107,9 +99,9 @@ void sweep_bulk_transfer_complete(void* user_data, unsigned int bytes_transferre
 	(void) user_data;
 	(void) bytes_transferred;
 
-	// For each buffer transferred, we need to bump the count to allow
-	// for the buffer(s) that are to be discarded.
-	m0_state.m4_count += (THROWAWAY_BUFFERS + 1) * 0x4000;
+	// For each buffer transferred, we need to bump the count by three buffers
+	// worth of data, to allow for the discarded buffers.
+	m0_state.m4_count += 3 * 0x4000;
 }
 
 void sweep_mode(uint32_t seq)
@@ -129,8 +121,8 @@ void sweep_mode(uint32_t seq)
 	// 4. M4 adds the sweep metadata at the start of the block and
 	//    schedules a bulk transfer for the block.
 	//
-	// 5. M4 retunes - this takes about 760us worst-case (300us on praline),
-	//    so should be complete before the M0 goes back to RX.
+	// 5. M4 retunes - this takes about 760us worst-case, so should be
+	//    complete before the M0 goes back to RX.
 	//
 	// 6. M4 spins until the M0 mode changes to RX, then advances the
 	//    m0_count limit by 16K and sets the next mode to WAIT.
@@ -160,9 +152,8 @@ void sweep_mode(uint32_t seq)
 			}
 		}
 
-		// Set M0 to switch back to RX after we have received our
-		// discard buffers.
-		m0_state.threshold += (0x4000 * THROWAWAY_BUFFERS);
+		// Set M0 to switch back to RX after two more buffers.
+		m0_state.threshold += 0x8000;
 		m0_state.next_mode = M0_MODE_RX;
 
 		// Write metadata to buffer.
@@ -187,7 +178,7 @@ void sweep_mode(uint32_t seq)
 			NULL);
 
 		// Use other buffer next time.
-		phase = (phase + 1) % THROWAWAY_BUFFERS;
+		phase = (phase + 1) % 2;
 
 		if (++blocks_queued == dwell_blocks) {
 			// Calculate next sweep frequency.
@@ -220,11 +211,7 @@ void sweep_mode(uint32_t seq)
 			}
 			// Retune to new frequency.
 			nvic_disable_irq(NVIC_USB0_IRQ);
-			radio_set_frequency(
-				&radio,
-				RADIO_CHANNEL0,
-				RADIO_FREQUENCY_RF,
-				(radio_frequency_t){.hz = sweep_freq + offset});
+			set_freq(sweep_freq + offset);
 			nvic_enable_irq(NVIC_USB0_IRQ);
 			blocks_queued = 0;
 		}

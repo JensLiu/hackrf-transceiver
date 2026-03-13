@@ -26,6 +26,8 @@
 #include <libopencm3/lpc43xx/m4/nvic.h>
 #include <libopencm3/lpc43xx/sgpio.h>
 
+sample_tx_callback_t sample_tx_callback = 0;
+
 void baseband_streaming_enable(sgpio_config_t* const sgpio_config)
 {
 	SGPIO_SET_EN_1 = (1 << SGPIO_SLICE_A);

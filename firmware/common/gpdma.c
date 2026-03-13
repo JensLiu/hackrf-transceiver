@@ -24,7 +24,7 @@
 
 #include <libopencm3/lpc43xx/gpdma.h>
 
-void gpdma_controller_enable(void)
+void gpdma_controller_enable()
 {
 	GPDMA_CONFIG |= GPDMA_CONFIG_E(1);
 	while ((GPDMA_CONFIG & GPDMA_CONFIG_E_MASK) == 0) {}

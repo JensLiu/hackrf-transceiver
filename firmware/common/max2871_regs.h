@@ -23,8 +23,7 @@
 #define MAX2871_REGS_H
 #include <stdint.h>
 
-#define MAX2871_VASA      (1 << 9)
-#define MAX2871_DIE_SHIFT 28
+#define MAX2871_VASA (1 << 9)
 
 void max2871_regs_init(void);
 uint32_t max2871_get_register(int reg);

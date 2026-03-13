@@ -2,7 +2,6 @@
 
 #include "gpio_lpc.h"
 #include "hackrf_core.h"
-#include "delay.h"
 
 #include <libopencm3/lpc43xx/scu.h>
 #include <libopencm3/lpc43xx/ssp.h>
@@ -31,7 +30,7 @@ static uint8_t lcdBuffer[RESX * RESY];
 
 static bool isTurned;
 
-static void select(void)
+static void select()
 {
 	/*
      * The LCD requires 9-Bit frames
@@ -59,7 +58,7 @@ static void select(void)
 	gpio_clear(&gpio_lcd_cs);
 }
 
-static void deselect(void)
+static void deselect()
 {
 	gpio_set(&gpio_lcd_cs);
 }

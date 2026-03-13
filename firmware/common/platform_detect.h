@@ -30,7 +30,6 @@
 #define PLATFORM_HACKRF1_OG (1 << 1)
 #define PLATFORM_RAD1O      (1 << 2)
 #define PLATFORM_HACKRF1_R9 (1 << 3)
-#define PLATFORM_PRALINE    (1 << 4)
 
 typedef enum {
 	BOARD_ID_JELLYBEAN = 0,
@@ -38,7 +37,6 @@ typedef enum {
 	BOARD_ID_HACKRF1_OG = 2, /* HackRF One prior to r9 */
 	BOARD_ID_RAD1O = 3,
 	BOARD_ID_HACKRF1_R9 = 4,
-	BOARD_ID_PRALINE = 5,
 	BOARD_ID_UNRECOGNIZED = 0xFE, /* tried detection but did not recognize board */
 	BOARD_ID_UNDETECTED = 0xFF,   /* detection not yet attempted */
 } board_id_t;
@@ -50,23 +48,11 @@ typedef enum {
 	BOARD_REV_HACKRF1_R8 = 3,
 	BOARD_REV_HACKRF1_R9 = 4,
 	BOARD_REV_HACKRF1_R10 = 5,
-	BOARD_REV_PRALINE_R0_1 = 6,
-	BOARD_REV_PRALINE_R0_2 = 7,
-	BOARD_REV_PRALINE_R0_3 = 8,
-	BOARD_REV_PRALINE_R1_0 = 9,
-	BOARD_REV_PRALINE_R1_1 = 10,
-	BOARD_REV_PRALINE_R1_2 = 11,
 	BOARD_REV_GSG_HACKRF1_R6 = 0x81,
 	BOARD_REV_GSG_HACKRF1_R7 = 0x82,
 	BOARD_REV_GSG_HACKRF1_R8 = 0x83,
 	BOARD_REV_GSG_HACKRF1_R9 = 0x84,
 	BOARD_REV_GSG_HACKRF1_R10 = 0x85,
-	BOARD_REV_GSG_PRALINE_R0_1 = 0x86,
-	BOARD_REV_GSG_PRALINE_R0_2 = 0x87,
-	BOARD_REV_GSG_PRALINE_R0_3 = 0x88,
-	BOARD_REV_GSG_PRALINE_R1_0 = 0x89,
-	BOARD_REV_GSG_PRALINE_R1_1 = 0x8a,
-	BOARD_REV_GSG_PRALINE_R1_2 = 0x8b,
 	BOARD_REV_UNRECOGNIZED =
 		0xFE,                /* tried detection but did not recognize revision */
 	BOARD_REV_UNDETECTED = 0xFF, /* detection not yet attempted */

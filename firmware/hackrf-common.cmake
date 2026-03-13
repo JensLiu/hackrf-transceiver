@@ -40,8 +40,6 @@ SET(LIBOPENCM3 ${PATH_HACKRF_FIRMWARE}/libopencm3)
 SET(PATH_DFU_PY ${PATH_HACKRF_FIRMWARE}/dfu.py)
 SET(PATH_CPLD_BITSTREAM_TOOL ${PATH_HACKRF_FIRMWARE}/tools/cpld_bitstream.py)
 set(PATH_HACKRF_CPLD_DATA_C ${CMAKE_CURRENT_BINARY_DIR}/hackrf_cpld_data.c)
-SET(PATH_PRALINE_FPGA_BIN ${PATH_HACKRF_FIRMWARE}/fpga/build/praline_fpga.bin)
-SET(PATH_PRALINE_FPGA_OBJ ${CMAKE_CURRENT_BINARY_DIR}/fpga.o)
 
 include(${PATH_HACKRF_FIRMWARE}/dfu-util.cmake)
 
@@ -64,7 +62,7 @@ if (NOT DEFINED VERSION)
 		OUTPUT_STRIP_TRAILING_WHITESPACE
 	)
 	if (GIT_VERSION_FOUND)
-		set(VERSION "2026.01.3+")
+		set(VERSION "2024.02.1+")
 	else (GIT_VERSION_FOUND)
 		set(VERSION "git-${GIT_VERSION}")
 	endif (GIT_VERSION_FOUND)
@@ -74,7 +72,7 @@ if(NOT DEFINED BOARD)
 	set(BOARD HACKRF_ONE)
 endif()
 
-if(BOARD STREQUAL "HACKRF_ONE" OR BOARD STREQUAL "PRALINE")
+if(BOARD STREQUAL "HACKRF_ONE")
 	set(MCU_PARTNO LPC4320)
 else()
 	set(MCU_PARTNO LPC4330)
@@ -86,13 +84,13 @@ endif()
 
 SET(HACKRF_OPTS "-D${BOARD} -DLPC43XX -D${MCU_PARTNO} -DTX_ENABLE -D'VERSION_STRING=\"${VERSION}\"'")
 
-SET(LDSCRIPT_M4 "-T${PATH_HACKRF_FIRMWARE_COMMON}/${MCU_PARTNO}_M4_memory.ld -Tlibopencm3_lpc43xx_rom_to_ram.ld -T${PATH_HACKRF_FIRMWARE_COMMON}/LPC43xx_M4_M0_image_from_text.ld -T${PATH_HACKRF_FIRMWARE_COMMON}/LPC43xx_M4_memory_rom_only.ld")
+SET(LDSCRIPT_M4 "-T${PATH_HACKRF_FIRMWARE_COMMON}/${MCU_PARTNO}_M4_memory.ld -Tlibopencm3_lpc43xx_rom_to_ram.ld -T${PATH_HACKRF_FIRMWARE_COMMON}/LPC43xx_M4_M0_image_from_text.ld")
 
 SET(LDSCRIPT_M4_RAM "-T${PATH_HACKRF_FIRMWARE_COMMON}/${MCU_PARTNO}_M4_memory.ld -Tlibopencm3_lpc43xx.ld -T${PATH_HACKRF_FIRMWARE_COMMON}/LPC43xx_M4_M0_image_from_text.ld")
 
 SET(LDSCRIPT_M0 "-T${PATH_HACKRF_FIRMWARE_COMMON}/LPC43xx_M0_memory.ld -Tlibopencm3_lpc43xx_m0.ld")
 
-SET(CFLAGS_COMMON "-Os -g3 -Wall -Wextra -Wstrict-prototypes -Wold-style-definition ${HACKRF_OPTS} -fno-common -MD")
+SET(CFLAGS_COMMON "-Os -g3 -Wall -Wextra ${HACKRF_OPTS} -fno-common -MD")
 SET(LDFLAGS_COMMON "-nostartfiles -Wl,--gc-sections")
 
 if(V STREQUAL "1")
@@ -145,7 +143,7 @@ macro(DeclareTarget project_name variant_suffix cflags ldflags)
 
 	add_library(${project_name}${variant_suffix}_objects OBJECT ${SRC_M4} ${project_name}${variant_suffix}_m0_bin.s)
 	set_target_properties(${project_name}${variant_suffix}_objects PROPERTIES COMPILE_FLAGS "${cflags}")
-	add_executable(${project_name}${variant_suffix}.elf $<TARGET_OBJECTS:${project_name}${variant_suffix}_objects> ${OBJ_M4})
+	add_executable(${project_name}${variant_suffix}.elf $<TARGET_OBJECTS:${project_name}${variant_suffix}_objects>)
 	add_dependencies(${project_name}${variant_suffix}.elf libopencm3_${project_name})
 
 	target_link_libraries(
@@ -168,11 +166,15 @@ endmacro()
 macro(DeclareTargets)
 	SET(SRC_M4
 		${SRC_M4}
-		${PATH_HACKRF_FIRMWARE_COMMON}/delay.c
 		${PATH_HACKRF_FIRMWARE_COMMON}/hackrf_core.c
 		${PATH_HACKRF_FIRMWARE_COMMON}/sgpio.c
 		${PATH_HACKRF_FIRMWARE_COMMON}/rf_path.c
 		${PATH_HACKRF_FIRMWARE_COMMON}/si5351c.c
+		${PATH_HACKRF_FIRMWARE_COMMON}/max283x.c
+		${PATH_HACKRF_FIRMWARE_COMMON}/max2837.c
+		${PATH_HACKRF_FIRMWARE_COMMON}/max2837_target.c
+		${PATH_HACKRF_FIRMWARE_COMMON}/max2839.c
+		${PATH_HACKRF_FIRMWARE_COMMON}/max2839_target.c
 		${PATH_HACKRF_FIRMWARE_COMMON}/max5864.c
 		${PATH_HACKRF_FIRMWARE_COMMON}/max5864_target.c
 		${PATH_HACKRF_FIRMWARE_COMMON}/mixer.c
@@ -189,10 +191,6 @@ macro(DeclareTargets)
 		${PATH_HACKRF_FIRMWARE_COMMON}/clkin.c
 		${PATH_HACKRF_FIRMWARE_COMMON}/gpdma.c
 		${PATH_HACKRF_FIRMWARE_COMMON}/user_config.c
-		${PATH_HACKRF_FIRMWARE_COMMON}/radio.c
-		${PATH_HACKRF_FIRMWARE_COMMON}/selftest.c
-		${PATH_HACKRF_FIRMWARE_COMMON}/m0_state.c
-		${PATH_HACKRF_FIRMWARE_COMMON}/adc.c
 		)
 
 	if(BOARD STREQUAL "RAD1O")
@@ -206,25 +204,6 @@ macro(DeclareTargets)
 			${SRC_M4}
 			${PATH_HACKRF_FIRMWARE_COMMON}/rffc5071.c
 			${PATH_HACKRF_FIRMWARE_COMMON}/rffc5071_spi.c
-		)
-	endif()
-
-	if(BOARD STREQUAL "PRALINE")
-		SET(SRC_M4
-			${SRC_M4}
-			${PATH_HACKRF_FIRMWARE_COMMON}/fpga.c
-			${PATH_HACKRF_FIRMWARE_COMMON}/ice40_spi.c
-			${PATH_HACKRF_FIRMWARE_COMMON}/max2831.c
-			${PATH_HACKRF_FIRMWARE_COMMON}/max2831_target.c
-		)
-	else()
-		SET(SRC_M4
-			${SRC_M4}
-			${PATH_HACKRF_FIRMWARE_COMMON}/max283x.c
-			${PATH_HACKRF_FIRMWARE_COMMON}/max2837.c
-			${PATH_HACKRF_FIRMWARE_COMMON}/max2837_target.c
-			${PATH_HACKRF_FIRMWARE_COMMON}/max2839.c
-			${PATH_HACKRF_FIRMWARE_COMMON}/max2839_target.c
 		)
 	endif()
 
@@ -249,17 +228,18 @@ macro(DeclareTargets)
 	set_target_properties(${PROJECT_NAME}_m0.elf PROPERTIES LINK_FLAGS "${LDFLAGS_M0}")
 
 	DeclareTarget("${PROJECT_NAME}" "" "${CFLAGS_M4}" "${LDFLAGS_M4}")	
-	DeclareTarget("${PROJECT_NAME}" "_ram" "${CFLAGS_M4_RAM} -DRAM_MODE" "${LDFLAGS_M4_RAM}")	
+	DeclareTarget("${PROJECT_NAME}" "_ram" "${CFLAGS_M4_RAM}" "${LDFLAGS_M4_RAM}")	
 	DeclareTarget("${PROJECT_NAME}" "_dfu" "${CFLAGS_M4_RAM} -DDFU_MODE" "${LDFLAGS_M4_RAM}")	
 
 	add_custom_target(
 		${PROJECT_NAME}.dfu ${DFU_ALL}
 		DEPENDS ${PROJECT_NAME}_dfu.bin
-		COMMAND rm -f _header.bin
+		COMMAND rm -f _tmp.dfu _header.bin
+		COMMAND cp ${PROJECT_NAME}_dfu.bin _tmp.dfu
+		COMMAND dfu-suffix --vid=0x1fc9 --pid=0x000c --did=0x0 -a _tmp.dfu
 		COMMAND python3 ${PATH_DFU_PY} ${PROJECT_NAME}
-		COMMAND cat _header.bin ${PROJECT_NAME}_dfu.bin > ${PROJECT_NAME}.dfu
-		COMMAND dfu-suffix --vid=0x1fc9 --pid=0x000c --did=0x0 -a ${PROJECT_NAME}.dfu
-		COMMAND rm -f _header.bin
+		COMMAND cat _header.bin _tmp.dfu >${PROJECT_NAME}.dfu
+		COMMAND rm -f _tmp.dfu _header.bin
 	)
 
 	# Program / flash targets

@@ -21,12 +21,19 @@ pipeline {
                 retry(3) {
                     sh './ci-scripts/test-host.sh'
                 }
-                sh 'hubs hackrf hackrf_dfu on'
-                sh 'python3 ci-scripts/hackrf_test.py --unattended --ci --log log --rev r4 --manufacturer --hostdir host/build/hackrf-tools/src/ --fwupdate firmware/hackrf_usb/build/ --tester 0000000000000000325866e629a25623 --eut RunningFromRAM'
-                sh 'hubs all off'
                 retry(3) {
-                    sh 'python3 ci-scripts/test-sgpio-debug.py'
+                    sh './ci-scripts/test-firmware-program.sh'
                 }
+                sh './ci-scripts/test-firmware-flash.sh'
+                sh 'python3 ci-scripts/test-debug.py'
+                retry(3) {
+                    sh 'python3 ci-scripts/test-transfer.py tx'
+                }
+                retry(3) {
+                    sh 'python3 ci-scripts/test-transfer.py rx'
+                }
+                sh 'hubs all off'
+                sh 'python3 ci-scripts/test-sgpio-debug.py'
                 sh 'hubs all reset'
             }
         }

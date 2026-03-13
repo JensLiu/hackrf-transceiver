@@ -7,23 +7,15 @@ Welcome to HackRF's documentation!
    :caption: User Documentation
 
    getting_help
-   troubleshooting
+   faq
    synchronization_checklist
    hackrf_projects_mentions
 
 .. toctree::
    :maxdepth: 2
-   :caption: Hardware Platforms
+   :caption: HackRF One Hardware
 
-   hackrf_pro
-   hackrf_one
-   rad1o
-   jawbreaker
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Hardware Information
-
+   hackrf_one 
    hackrf_minimum_requirements
    list_of_hardware_revisions
    hardware_components 
@@ -36,6 +28,13 @@ Welcome to HackRF's documentation!
    enclosure_options    
    usb_cables
    rf_shield_installation   
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Jawbreaker Hardware
+
+   jawbreaker 
+
 
 .. toctree::
    :maxdepth: 2

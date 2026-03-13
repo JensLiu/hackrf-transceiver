@@ -25,7 +25,6 @@
 
 #include <hackrf.h>
 
-#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +37,12 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <inttypes.h>
+
+#ifndef bool
+typedef int bool;
+	#define true 1
+	#define false 0
+#endif
 
 #ifdef _WIN32
 	#include <windows.h>
@@ -387,7 +392,18 @@ bool repeat = false;
 bool crystal_correct = false;
 uint32_t crystal_correct_ppm;
 
+// Add new variables for bitstream
+bool bitstream_mode = false;
+char* bitstream_input = NULL;
+uint8_t* bitstream_pattern = NULL;
+size_t bitstream_length = 0;
+bool indefinite_bitstream = false;  // New flag for indefinite bitstream transmission
+
 int requested_mode_count = 0;
+
+// Add new flag variable at the top with other flags
+static bool save_bitstream = false;
+static char* filename = NULL;
 
 void stop_main_loop(void)
 {
@@ -404,72 +420,80 @@ int rx_callback(hackrf_transfer* transfer)
 	size_t bytes_to_write;
 	size_t bytes_written;
 	unsigned int i;
+	uint64_t sum;
+
+	fprintf(stderr, "RX_CALLBACK: Entered callback function\n");
 
 	if (file == NULL) {
+		fprintf(stderr, "RX_CALLBACK: Error - file is NULL\n");
 		stop_main_loop();
 		return -1;
 	}
-
-	/* Accumulate power (magnitude squared). */
-	bytes_to_write = transfer->valid_length;
-	uint64_t sum = 0;
-	for (i = 0; i < bytes_to_write; i++) {
-		int8_t value = transfer->buffer[i];
-		sum += value * value;
-	}
-
-	/* Update both running totals at approximately the same time. */
-	byte_count += transfer->valid_length;
-	stream_power += sum;
-
-	if (limit_num_samples) {
-		if (bytes_to_write >= bytes_to_xfer) {
-			bytes_to_write = bytes_to_xfer;
+	if (save_bitstream) {
+		fprintf(stderr, "RX_CALLBACK: Processing bitstream data\n");
+		/* Write the demodulated bits directly to file */
+		bytes_to_write = transfer->valid_length;
+		
+		/* Debug print the raw values */
+		fprintf(stderr, "RX_CALLBACK: Received %zu bytes from firmware: ", bytes_to_write);
+		for (i = 0; i < bytes_to_write && i < 32; i++) {  // Print first 32 bytes
+			fprintf(stderr, "%02x ", (unsigned char)transfer->buffer[i]);
 		}
-		bytes_to_xfer -= bytes_to_write;
-	}
-
-	if (receive_wav) {
-		/* convert .wav contents from signed to unsigned */
+		if (bytes_to_write > 32) {
+			fprintf(stderr, "...");
+		}
+		fprintf(stderr, "\n");
+		
+		/* Write each byte as a '1' or '0' character */
 		for (i = 0; i < bytes_to_write; i++) {
-			transfer->buffer[i] ^= (uint8_t) 0x80;
+			char bit = transfer->buffer[i] ? '1' : '0';
+			fwrite(&bit, 1, 1, file);
+		}
+		
+		/* Add newline after each buffer */
+		fwrite("\n", 1, 1, file);
+		fflush(file);  // Ensure data is written immediately
+		
+		/* Update byte count for statistics */
+		byte_count += bytes_to_write;
+		fprintf(stderr, "RX_CALLBACK: Wrote %zu bytes to file\n", bytes_to_write);
+	} 
+
+else {
+		/* Original receive mode code */
+		bytes_to_write = transfer->valid_length;
+		sum = 0;
+		for (i = 0; i < bytes_to_write; i++) {
+			int8_t value = transfer->buffer[i];
+			sum += value * value;
+		}
+
+		byte_count += transfer->valid_length;
+		stream_power += sum;
+
+		if (limit_num_samples) {
+			if (bytes_to_write >= bytes_to_xfer) {
+				bytes_to_write = bytes_to_xfer;
+			}
+			bytes_to_xfer -= bytes_to_write;
+		}
+
+		if (receive_wav) {
+			for (i = 0; i < bytes_to_write; i++) {
+				transfer->buffer[i] ^= (uint8_t) 0x80;
+			}
+		}
+
+		if (stream_size == 0) {
+			bytes_written = fwrite(transfer->buffer, 1, bytes_to_write, file);
+			if ((bytes_written != bytes_to_write) ||
+			    (limit_num_samples && (bytes_to_xfer == 0))) {
+				stop_main_loop();
+				return -1;
+			}
 		}
 	}
 
-	if (stream_size == 0) {
-		bytes_written = fwrite(transfer->buffer, 1, bytes_to_write, file);
-		if ((bytes_written != bytes_to_write) ||
-		    (limit_num_samples && (bytes_to_xfer == 0))) {
-			stop_main_loop();
-			return -1;
-		} else {
-			return 0;
-		}
-	}
-
-#ifndef _WIN32
-	if ((stream_size - 1 + stream_head - stream_tail) % stream_size <
-	    bytes_to_write) {
-		stream_drop++;
-	} else {
-		if (stream_tail + bytes_to_write <= stream_size) {
-			memcpy(stream_buf + stream_tail,
-			       transfer->buffer,
-			       bytes_to_write);
-		} else {
-			memcpy(stream_buf + stream_tail,
-			       transfer->buffer,
-			       (stream_size - stream_tail));
-			memcpy(stream_buf,
-			       transfer->buffer + (stream_size - stream_tail),
-			       bytes_to_write - (stream_size - stream_tail));
-		};
-		__atomic_store_n(
-			&stream_tail,
-			(stream_tail + bytes_to_write) % stream_size,
-			__ATOMIC_RELEASE);
-	}
-#endif
 	return 0;
 }
 
@@ -480,7 +504,7 @@ int tx_callback(hackrf_transfer* transfer)
 	unsigned int i;
 
 	/* Check we have a valid source of samples. */
-	if (file == NULL && transceiver_mode != TRANSCEIVER_MODE_SS) {
+	if (file == NULL && transceiver_mode != TRANSCEIVER_MODE_SS && !bitstream_mode) {
 		stop_main_loop();
 		return -1;
 	}
@@ -501,12 +525,33 @@ int tx_callback(hackrf_transfer* transfer)
 
 	/* Fill the buffer. */
 	if (file == NULL) {
-		/* Transmit continuous wave with specific amplitude */
-		for (i = 0; i < bytes_to_read; i += 2) {
-			transfer->buffer[i] = amplitude;
-			transfer->buffer[i + 1] = 0;
+		if (bitstream_mode) {
+			/* In bitstream mode, fill buffer with zeros since firmware handles the pattern */
+			memset(transfer->buffer, 0, bytes_to_read);
+			bytes_read = bytes_to_read;
+			
+			/* Update byte count for statistics */
+			byte_count += bytes_read;
+			
+			/* Set valid length to ensure data is transferred */
+			transfer->valid_length = bytes_read;
+			
+			/* Update stream power for statistics */
+			for (i = 0; i < bytes_read; i++) {
+				int8_t value = transfer->buffer[i];
+				stream_power += value * value;
+			}
+			
+			/* Return 0 to indicate successful transfer */
+			return 0;
+		} else {
+			/* Transmit continuous wave with specific amplitude */
+			for (i = 0; i < bytes_to_read; i += 2) {
+				transfer->buffer[i] = amplitude;
+				transfer->buffer[i + 1] = 0;
+			}
+			bytes_read = bytes_to_read;
 		}
-		bytes_read = bytes_to_read;
 	} else {
 		/* Read samples from file. */
 		bytes_read = fread(transfer->buffer, 1, bytes_to_read, file);
@@ -689,9 +734,11 @@ static void usage()
 	printf("\t[-c amplitude] # CW signal source mode, amplitude 0-127 (DC value to DAC).\n");
 	printf("\t[-R] # Repeat TX mode (default is off) \n");
 	printf("\t[-b baseband_filter_bw_hz] # Set baseband filter bandwidth in Hz.\n");
-	printf("\tPossible values: 1.75/2.5/3.5/5/5.5/6/7/8/9/10/12/14/15/20/24/28MHz, default <= 0.75 * sample_rate_hz.\n");
+	printf("\t[-k filename] # Save received bitstream pattern to file.\n");
 	printf("\t[-C ppm] # Set Internal crystal clock error in ppm.\n");
 	printf("\t[-H] # Synchronize RX/TX to external trigger input.\n");
+	printf("\t[-e bitstream] # Bitstream pattern to transmit (e.g. '1011')\n");
+	printf("\t[-I] # Enable indefinite bitstream transmission after program termination\n");
 }
 
 static hackrf_device* device = NULL;
@@ -744,10 +791,13 @@ int main(int argc, char** argv)
 	hackrf_m0_state state;
 	stats_t stats = {0, 0};
 
-	while ((opt = getopt(argc, argv, "Hwr:t:f:i:o:m:a:p:s:Fn:b:l:g:x:c:d:C:RS:Bh?")) !=
+	while ((opt = getopt(argc, argv, "Hwr:t:f:e:i:o:m:a:p:s:Fn:b:l:g:x:c:d:C:RS:Bh?Ik:")) !=
 	       EOF) {
 		result = HACKRF_SUCCESS;
 		switch (opt) {
+		case 'I':
+			indefinite_bitstream = true;
+			break;
 		case 'H':
 			hw_sync = true;
 			break;
@@ -838,12 +888,36 @@ int main(int argc, char** argv)
 			display_stats = true;
 			break;
 
-		case 'b':
-			result = parse_frequency_u32(
-				optarg,
-				endptr,
-				&baseband_filter_bw_hz);
-			baseband_filter_bw = true;
+		case 'k':
+			save_bitstream = true;
+			path = optarg;
+			transceiver_mode = TRANSCEIVER_MODE_RX;  // Set transceiver mode to RX
+			break;
+
+		case 'e':
+			requested_mode_count++;
+			bitstream_mode = true;
+			bitstream_input = optarg;
+			// Convert string bitstream to array
+			bitstream_length = strlen(bitstream_input);
+			bitstream_pattern = malloc(bitstream_length);
+			if (!bitstream_pattern) {
+				fprintf(stderr, "Failed to allocate memory for bitstream pattern\n");
+				return EXIT_FAILURE;
+			}
+			{
+				size_t i;
+				for (i = 0; i < bitstream_length; i++) {
+					if (bitstream_input[i] != '0' && bitstream_input[i] != '1') {
+						fprintf(stderr, "Invalid bitstream pattern. Use only 0s and 1s\n");
+						free(bitstream_pattern);
+						return EXIT_FAILURE;
+					}
+					bitstream_pattern[i] = bitstream_input[i] - '0';
+				}
+			}
+			transceiver_mode = TRANSCEIVER_MODE_TX;
+
 			break;
 
 		case 'c':
@@ -1065,7 +1139,7 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
-	if (requested_mode_count < 1) {
+	if (requested_mode_count < 1 && !save_bitstream) {
 		fprintf(stderr, "specify one of: -t, -c, -r, -w\n");
 		usage();
 		return EXIT_FAILURE;
@@ -1105,8 +1179,9 @@ int main(int argc, char** argv)
 		fprintf(stderr, "Receive wav file: %s\n", path);
 	}
 
-	// In signal source mode, the PATH argument is neglected.
-	if (transceiver_mode != TRANSCEIVER_MODE_SS) {
+	// In signal source mode or bitstream mode, the PATH argument is neglected.
+	if (transceiver_mode != TRANSCEIVER_MODE_SS && 
+		!bitstream_mode) {
 		if (path == NULL) {
 			fprintf(stderr, "specify a path to a file to transmit/receive\n");
 			usage();
@@ -1141,8 +1216,46 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
-	if (transceiver_mode != TRANSCEIVER_MODE_SS) {
-		if (transceiver_mode == TRANSCEIVER_MODE_RX) {
+	// After hackrf_open_by_serial and before starting transfers
+	if (save_bitstream) {
+		fprintf(stderr, "Setting up RX mode for bitstream capture...\n");
+		
+		// Open the output file first
+		if (strcmp(path, "-") == 0) {
+			file = stdout;
+		} else {
+			file = fopen(path, "wb");
+			if (file == NULL) {
+				fprintf(stderr, "Failed to open output file: %s\n", path);
+				return EXIT_FAILURE;
+			}
+		}
+		
+		result = hackrf_set_transceiver_mode(device, TRANSCEIVER_MODE_RX);
+		if (result != HACKRF_SUCCESS) {
+			fprintf(stderr,
+				"hackrf_set_transceiver_mode() failed: %s (%d)\n",
+				hackrf_error_name(result),
+				result);
+			return EXIT_FAILURE;
+		}
+		fprintf(stderr, "Transceiver mode set to RX\n");
+
+		// Start RX mode
+		result = hackrf_start_rx(device, rx_callback, NULL);
+		if (result != HACKRF_SUCCESS) {
+			fprintf(stderr,
+				"hackrf_start_rx() failed: %s (%d)\n",
+				hackrf_error_name(result),
+				result);
+			return EXIT_FAILURE;
+		}
+		fprintf(stderr, "Started RX mode for bitstream capture\n");
+	}
+
+	// Only open file if not in bitstream mode
+	if (transceiver_mode != TRANSCEIVER_MODE_SS && !bitstream_mode) {
+		if (transceiver_mode == TRANSCEIVER_MODE_RX || receive_wav) {
 			if (strcmp(path, "-") == 0) {
 				file = stdout;
 			} else {
@@ -1311,11 +1424,33 @@ int main(int argc, char** argv)
 		result |= hackrf_start_rx(device, rx_callback, NULL);
 	} else {
 		result = hackrf_set_txvga_gain(device, txvga_gain);
+		fprintf(stderr,
+		"call hackrf_set_txvga_gain(%u)\n", txvga_gain);
+
+		// Send bitstream pattern if in bitstream mode
+		if (bitstream_mode) {
+			fprintf(stderr, "Setting bitstream pattern: %s\n", bitstream_input);
+			result = hackrf_set_bitstream_pattern(device, bitstream_pattern, bitstream_length);
+			if (result != HACKRF_SUCCESS) {
+				fprintf(stderr,
+					"hackrf_set_bitstream_pattern() failed: %s (%d)\n",
+					hackrf_error_name(result),
+					result);
+				return EXIT_FAILURE;
+			}
+		}
+
 		result |= hackrf_enable_tx_flush(device, flush_callback, NULL);
+		fprintf(stderr,
+		"call hackrf_enable_tx_flush(%p)\n", (void*)flush_callback);
 		result |= hackrf_set_tx_block_complete_callback(
 			device,
 			tx_complete_callback);
+		fprintf(stderr,
+		"call hackrf_set_tx_block_complete_callback(%p)\n", (void*)tx_complete_callback);
 		result |= hackrf_start_tx(device, tx_callback, NULL);
+		fprintf(stderr,
+		"call hackrf_start_tx(%p)\n", (void*)tx_callback);
 	}
 
 	if (limit_num_samples) {
@@ -1403,7 +1538,7 @@ int main(int argc, char** argv)
 					(byte_count_now * 127 * 127);
 				double dB_full_scale = 10 * log10(full_scale_ratio) + 3.0;
 				fprintf(stderr,
-					"%4.1f MB / %5.3f sec = %4.1f MB/second, average power %3.1f dBfs",
+					"%4.1f MiB / %5.3f sec = %4.1f MiB/second, average power %3.1f dBfs",
 					(byte_count_now / 1e6f),
 					time_difference,
 					(rate / 1e6f),
@@ -1434,7 +1569,8 @@ int main(int argc, char** argv)
 
 			time_start = time_now;
 
-			if ((byte_count_now == 0) && (!hw_sync) && (!flush_complete)) {
+			// Only exit if not in indefinite bitstream mode and not in save_bitstream mode
+			if ((byte_count_now == 0) && (!hw_sync) && (!flush_complete) && !save_bitstream) {
 				exit_code = EXIT_FAILURE;
 				fprintf(stderr,
 					"\nCouldn't transfer any bytes for one second.\n");
@@ -1479,14 +1615,19 @@ int main(int argc, char** argv)
 		}
 
 		if (transmit || signalsource) {
-			result = hackrf_stop_tx(device);
-			if (result != HACKRF_SUCCESS) {
-				fprintf(stderr,
-					"hackrf_stop_tx() failed: %s (%d)\n",
-					hackrf_error_name(result),
-					result);
+			// Don't stop TX if indefinite bitstream is enabled
+			if (!(bitstream_mode && indefinite_bitstream)) {
+				result = hackrf_stop_tx(device);
+				if (result != HACKRF_SUCCESS) {
+					fprintf(stderr,
+						"hackrf_stop_tx() failed: %s (%d)\n",
+						hackrf_error_name(result),
+						result);
+				} else {
+					fprintf(stderr, "hackrf_stop_tx() done\n");
+				}
 			} else {
-				fprintf(stderr, "hackrf_stop_tx() done\n");
+				fprintf(stderr, "Leaving bitstream transmission running indefinitely\n");
 			}
 		}
 
@@ -1550,6 +1691,13 @@ int main(int argc, char** argv)
 			fprintf(stderr, "fclose() done\n");
 		}
 	}
+
+	// Add cleanup for bitstream pattern
+	if (bitstream_pattern) {
+		free(bitstream_pattern);
+		bitstream_pattern = NULL;
+	}
+
 	fprintf(stderr, "exit\n");
 	return exit_code;
 }

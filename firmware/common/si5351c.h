@@ -56,8 +56,7 @@ extern "C" {
 #define SI5351C_CLK_IDRV_6MA 2
 #define SI5351C_CLK_IDRV_8MA 3
 
-#define SI5351C_LOS   (1 << 4)
-#define SI5351C_REVID 0x03
+#define SI5351C_LOS (1 << 4)
 
 enum pll_sources {
 	PLL_SOURCE_UNINITIALIZED = -1,

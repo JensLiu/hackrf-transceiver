@@ -1,7 +1,55 @@
 Expansion Interface
 ~~~~~~~~~~~~~~~~~~~
 
-The common HackRF expansion interface consists of headers P20, P22, and P28. These headers are present on both HackRF Pro and HackRF One, and support hardware add-ons including PortaPack and Opera Cake.
+The HackRF One expansion interface consists of headers P9, P20, P22, and P28. These four headers are installed on the commercial HackRF One from Great Scott Gadgets.
+
+
+
+P9 Baseband 
+^^^^^^^^^^^
+
+A direct analog interface to the high speed dual ADC and dual DAC.
+
+.. list-table :: 
+  :header-rows: 1
+  :widths: 1 1 
+
+  * - Pin
+    - Function
+  * - 1     
+    - GND
+  * - 2   
+    - GND
+  * - 3
+    - GND
+  * - 4   
+    - RXBBQ-
+  * - 5   
+    - RXBBI-
+  * - 6   
+    - RXBBQ+
+  * - 7   
+    - RXBBI+
+  * - 8   
+    - GND
+  * - 9   
+    - GND
+  * - 10  
+    - TXBBI-
+  * - 11  
+    - TXBBQ+
+  * - 12  
+    - TXBBI+
+  * - 13  
+    - TXBBQ-
+  * - 14  
+    - GND
+  * - 15  
+    - GND
+  * - 16  
+    - GND
+
+
 
 P20 GPIO
 ^^^^^^^^
@@ -17,15 +65,15 @@ Providing access to GPIO, ADC, RTC, and power.
   * - 1   
     - VBAT
   * - 2   
-    - RTC_ALARM (One) / PB_5 (Pro)
+    - RTC_ALARM
   * - 3   
-    - VCC (One) / 3V3AUX (Pro)
+    - VCC
   * - 4   
     - WAKEUP
   * - 5   
     - GPIO3_8
   * - 6   
-    - GPIO3_0 (One) / GPIO3_9 (Pro)
+    - GPIO3_0
   * - 7   
     - GPIO3_10
   * - 8   
@@ -73,7 +121,7 @@ I2S, SPI, I2C, UART, GPIO, and clocks.
   * - Pin     
     - Function
   * - 1   
-    - CLKOUT (One) / P2 (Pro)
+    - CLKOUT
   * - 2   
     - CLKIN
   * - 3   
@@ -85,21 +133,21 @@ I2S, SPI, I2C, UART, GPIO, and clocks.
   * - 6   
     - I2C1_SDA
   * - 7   
-    - SPIFI_MISO (One) / PB_1 (Pro)
+    - SPIFI_MISO
   * - 8   
-    - SPIFI_SCK (One) / PB_3 (Pro)
+    - SPIFI_SCK
   * - 9   
-    - SPIFI_MOSI (One) / PA_4 (Pro)
+    - SPIFI_MOSI
   * - 10  
     - GND
   * - 11  
-    - VCC (One) / 3V3AUX (Pro)
+    - VCC
   * - 12  
-    - I2S0_RX_SCK (One) / PA_3 (Pro)
+    - I2S0_RX_SCK
   * - 13  
-    - I2S0_RX_SDA (One) / I2S0_TX_SDA (Pro)
+    - I2S_RX_SDA
   * - 14  
-    - I2S0_RX_MCLK (One) / PB_0 (Pro)
+    - I2S0_RX_MCLK
   * - 15  
     - I2S0_RX_WS
   * - 16  
@@ -121,7 +169,7 @@ I2S, SPI, I2C, UART, GPIO, and clocks.
   * - 24  
     - SDA
   * - 25  
-    - CLK6 (One) / AUX_CLK2 (Pro)
+    - CLK6
   * - 26  
     - SCL
 
@@ -139,7 +187,7 @@ SDIO, GPIO, clocks, and CPLD.
   * - Pin     
     - Function
   * - 1   
-    - VCC (One) / 3V3AUX (Pro)
+    - VCC
   * - 2   
     - GND
   * - 3   
@@ -163,69 +211,25 @@ SDIO, GPIO, clocks, and CPLD.
   * - 12  
     - GND
   * - 13  
-    - GCK2 (One) / P5_6 (Pro)
+    - GCK2
   * - 14  
-    - GCK1 (One) / P5_7 (Pro)
+    - GCK1
   * - 15  
-    - Trigger out: B1AUX14 (One) / TRIGGER.OUT (Pro)
+    - B1AUX14 (trigger output)
   * - 16  
-    - Trigger in: B1AUX13 (One) / TRIGGER.IN (Pro)
+    - B1AUX13 (trigger input)
   * - 17  
     - CPLD_TCK
   * - 18  
-    - BANK2F3M2 (One) / PE_0 (Pro)
+    - BANK2F3M2
   * - 19  
-    - CPLD_TDI (One) / I2S0_RX_SDA (Pro)
+    - CPLD_TDI
   * - 20  
-    - BANK2F3M6 (One) / P9_1 (Pro)
+    - BANK2F3M6
   * - 21  
-    - BANK2F3M12 (One) / P5_3 (Pro)
+    - BANK2F3M12
   * - 22  
-    - BANK2F3M4 (One) / P1_7 (Pro)
-
-P9 Baseband (HackRF One)
-^^^^^^^^^^^^^^^^^^^^^^^^
-
-A direct analog interface to the high speed dual ADC and dual DAC.
-
-.. list-table ::
-  :header-rows: 1
-  :widths: 1 1
-
-  * - Pin
-    - Function
-  * - 1
-    - GND
-  * - 2
-    - GND
-  * - 3
-    - GND
-  * - 4
-    - RXBBQ-
-  * - 5
-    - RXBBI-
-  * - 6
-    - RXBBQ+
-  * - 7
-    - RXBBI+
-  * - 8
-    - GND
-  * - 9
-    - GND
-  * - 10
-    - TXBBI-
-  * - 11
-    - TXBBQ+
-  * - 12
-    - TXBBI+
-  * - 13
-    - TXBBQ-
-  * - 14
-    - GND
-  * - 15
-    - GND
-  * - 16
-    - GND
+    - BANK2F3M4
 
 Additional unpopulated headers and test points are available for test and development, but they may be incompatible with some enclosure or expansion options.
 
