@@ -204,6 +204,10 @@ usb_request_status_t usb_vendor_request_set_sample_rate_frac(
 			NULL);
 		return USB_REQUEST_STATUS_OK;
 	} else if (stage == USB_TRANSFER_STAGE_DATA) {
+		uart_printf(
+			"usb_vendor_request_set_sample_rate_frac DATA freq_hz=%u divider=%u\n",
+			set_sample_r_params.freq_hz,
+			set_sample_r_params.divider);
 		radio_error_t result = radio_set_sample_rate(
 			&radio,
 			RADIO_CHANNEL0,
@@ -509,9 +513,9 @@ usb_request_status_t usb_vendor_request_set_transceiver_mode(
 	const usb_transfer_stage_t stage)
 {
 	if (stage == USB_TRANSFER_STAGE_SETUP) {
-		uart_printf(
-			"usb_vendor_request_set_transceiver_mode SETUP value=%u\n",
-			endpoint->setup.value);
+		// uart_printf(
+		// 	"usb_vendor_request_set_transceiver_mode SETUP value=%u\n",
+		// 	endpoint->setup.value);
 		switch (endpoint->setup.value) {
 		case TRANSCEIVER_MODE_OFF:
 		case TRANSCEIVER_MODE_RX:
@@ -739,6 +743,9 @@ void rx_mode(uint32_t seq)
 	#ifdef RX_IF_GAIN
 	rx_set_if_gain(RX_IF_GAIN);
 	#endif
+	#ifdef RX_BB_GAIN
+	rx_set_bb_gain(RX_BB_GAIN);
+	#endif
 	#ifdef RX_ANTENNA_ENABLE
 	set_antenna_enable(RX_ANTENNA_ENABLE);
 	#endif
@@ -771,27 +778,16 @@ void rx_mode(uint32_t seq)
 				sample_count++;
 
 				if (sample_count >= RX_BIT_SAMPLES) {
-					uint32_t mag2_avg = mag2_sum /
-						RX_BIT_SAMPLES; // TODO: use power of 2 for division efficiency
-
+					// DONT'T DO INTEGER DIVIDE BY CONSTANT
 					// Update noise floor (slow moving average)
-					noise_floor = (noise_floor * 15 + mag2_avg) / 16;
+					noise_floor = (noise_floor * 15 + mag2_sum) / 16;
 
 					// Adaptive threshold
 					const uint32_t adaptive_threshold =
 						noise_floor + RX_THRESHOLD_MARGIN;
 
-					current_bit = (mag2_avg > adaptive_threshold);
-					// uart_printf("mag2_avg=%u noise_floor=%u threshold=%u bit=%d\n",
-					// 	mag2_avg,
-					// 	noise_floor,
-					// 	adaptive_threshold,
-					// 	current_bit);
-					// uart_printf("%d", current_bit);
-					// uart_printf("%d\t", mag2_avg);
-					// uart_printf("%d", current_bit);
-					bit_buffer[bit_buffer_index++] =
-						current_bit ? 1 : 0;
+					current_bit = (mag2_sum > adaptive_threshold);
+					// uart_printf("%d\t", current_bit);
 
 					if (bit_buffer_index >= RX_BIT_PACKET_SIZE) {
 						memcpy(tx_buffer,
@@ -831,116 +827,6 @@ void rx_mode(uint32_t seq)
 
 	transceiver_shutdown();
 }
-
-// void rx_mode(uint32_t seq)
-// {
-// 	// set_sample_rate(RX_SAMPLE_RATE);
-// 	// set_freq(CENTRE_FREQ);
-// 	// max283x_set_lna_gain(&max283x, 40);
-// 	// rf_path_set_lna(&rf_path, 1);
-// 	// rf_path_set_antenna(&rf_path, 1);
-
-// 	#ifdef RX_SAMPLE_RATE
-// 	set_sample_rate(RX_SAMPLE_RATE);
-// 	#endif
-// 	#ifdef RX_BASEBAND_FILTER_BW
-// 	set_baseband_filter_bandwidth(RX_BASEBAND_FILTER_BW);
-// 	#endif
-// 	#ifdef CENTRE_FREQ
-// 	set_centre_frequency(CENTRE_FREQ);
-// 	#endif
-// 	#ifdef RX_RF_GAIN
-// 	rx_set_rf_gain(RX_RF_GAIN);
-// 	#endif
-// 	#ifdef RX_IF_GAIN
-// 	rx_set_if_gain(RX_IF_GAIN);
-// 	#endif
-// 	#ifdef RX_ANTENNA_ENABLE
-// 	set_antenna_enable(RX_ANTENNA_ENABLE);
-// 	#endif
-
-// 	uint32_t usb_count = 0;
-// 	transceiver_startup(TRANSCEIVER_MODE_RX);
-// 	baseband_streaming_enable(&sgpio_config);
-
-// 	// Constants matching the transmitter
-// 	uint32_t sample_count = 0;
-// 	uint64_t mag2_sum = 0; // Sum of magnitude squared
-// 	bool current_bit = false;
-// 	uint8_t bit_buffer[USB_TRANSFER_SIZE]; // Buffer to store detected bits
-// 	uint32_t bit_buffer_index = 0;
-// 	uint8_t tx_buffer[USB_TRANSFER_SIZE]; // Separate buffer for USB transfers
-
-// 	uint32_t noise_floor = 0;
-// 	const uint32_t THRESHOLD_MARGIN = 500;
-
-// 	while (1) {
-// 		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
-// 			uint8_t* buffer =
-// 				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
-
-// 			for (uint32_t i = 0; i < USB_TRANSFER_SIZE; i += 2) {
-// 				int32_t I = (int8_t) buffer[i];
-// 				int32_t Q = (int8_t) buffer[i + 1];
-
-// 				uint32_t mag2 = I * I + Q * Q;
-// 				mag2_sum += mag2;
-// 				sample_count++;
-
-// 				if (sample_count >= RX_BIT_SAMPLES) {
-// 					uint32_t mag2_avg = mag2_sum / RX_BIT_SAMPLES;
-
-// 					// Update noise floor (slow moving average)
-// 					noise_floor = (noise_floor * 15 + mag2_avg) / 16;
-
-// 					// Adaptive threshold
-// 					uint32_t adaptive_threshold =
-// 						noise_floor + THRESHOLD_MARGIN;
-
-// 					current_bit = (mag2_avg > adaptive_threshold);
-
-// 					bit_buffer[bit_buffer_index++] =
-// 						current_bit ? 1 : 0;
-
-// 					if (bit_buffer_index >= RX_BIT_PACKET_SIZE) {
-// 						memcpy(tx_buffer,
-// 						       bit_buffer,
-// 						       RX_BIT_PACKET_SIZE);
-
-// 						usb_transfer_schedule_block(
-// 							&usb_endpoint_bulk_in,
-// 							tx_buffer,
-// 							RX_BIT_PACKET_SIZE,
-// 							transceiver_bulk_transfer_complete,
-// 							NULL);
-
-// 						while (!usb_endpoint_bulk_in
-// 								.transfer_complete) {
-// 							__asm__("nop");
-// 						}
-
-// 						bit_buffer_index = 0;
-// 					}
-
-// 					if (current_bit) {
-// 						led_on(LED3);
-// 					} else {
-// 						led_off(LED3);
-// 					}
-
-// 					sample_count = 0;
-// 					mag2_sum = 0;
-// 				}
-// 			}
-
-// 			usb_count += USB_TRANSFER_SIZE;
-// 			m0_state.m4_count += USB_TRANSFER_SIZE;
-// 			// m0_state.m0_count += USB_TRANSFER_SIZE;
-// 		}
-// 	}
-
-// 	transceiver_shutdown();
-// }
 #endif
 
 #ifndef CUSTOM_TX_MODE

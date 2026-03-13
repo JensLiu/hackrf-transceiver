@@ -1,10 +1,10 @@
 // CUSTOM LOGICS
 #define CUSTOM_RX_MODE
 
-// #define CUSTOM_BIT_PATTERN {1, 0, 1, 1, 0, 1, 1, 1, 0}
-#define CUSTOM_BIT_PATTERN {1, 0, 1, 0, 1, 0, 1, 0}
-
-#define RX_BIT_PACKET_SIZE 4
+// BIT PATTERN TEST
+// #define CUSTOM_BIT_PATTERN {1, 0, 1, 0, 1, 0, 1, 0}
+#define CUSTOM_BIT_PATTERN {1, 0, 1, 1, 0, 1, 1, 1, 0}
+#define RX_BIT_PACKET_SIZE 9
 
 // RADIO PARAMETERS
 #define IN_PROGRESS
@@ -14,12 +14,13 @@
 	#define CENTRE_FREQ         915000000
 	#define SINE_FREQ           100000
 	#define TX_BIT_SAMPLES      1000
-	#define RX_BIT_SAMPLES      200 // < needs adjusting
+	#define RX_BIT_SAMPLES      1000 /* Less bit samples means more transfer overhead! */
 	#define RX_THRESHOLD_MARGIN 20
 	#define TX_RF_GAIN          30
 	#define TX_IF_GAIN          47
-	#define RX_IF_GAIN          40 // < needs adjusting
-	#define RX_RF_GAIN          30 // < needs adjusting
+	#define RX_IF_GAIN          32 /* needs adjusting*/
+	#define RX_RF_GAIN          30 /* needs adjusting*/
+	#define RX_BB_GAIN          30
 	#define TX_ANTENNA_ENABLE   false
 	#define RX_ANTENNA_ENABLE   false
 #else
