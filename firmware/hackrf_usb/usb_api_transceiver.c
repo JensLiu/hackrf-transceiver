@@ -787,27 +787,29 @@ void rx_mode(uint32_t seq)
 						noise_floor + RX_THRESHOLD_MARGIN;
 
 					current_bit = (mag2_sum > adaptive_threshold);
-					// uart_printf("%d\t", current_bit);
+					uart_printf("%d\t", mag2_sum);
 
-					if (bit_buffer_index >= RX_BIT_PACKET_SIZE) {
-						memcpy(tx_buffer,
-						       bit_buffer,
-						       RX_BIT_PACKET_SIZE);
+					// bit_buffer[bit_buffer_index++] = current_bit;
+					// if (bit_buffer_index >= RX_BIT_PACKET_SIZE) {
+					// 	uart_printf("\r\n");
+						// memcpy(tx_buffer,
+						//        bit_buffer,
+						//        RX_BIT_PACKET_SIZE);
 
-						usb_transfer_schedule_block(
-							&usb_endpoint_bulk_in,
-							tx_buffer,
-							RX_BIT_PACKET_SIZE,
-							transceiver_bulk_transfer_complete,
-							NULL);
+						// usb_transfer_schedule_block(
+						// 	&usb_endpoint_bulk_in,
+						// 	tx_buffer,
+						// 	RX_BIT_PACKET_SIZE,
+						// 	transceiver_bulk_transfer_complete,
+						// 	NULL);
 
-						while (!usb_endpoint_bulk_in
-								.transfer_complete) {
-							__asm__("nop");
-						}
+						// while (!usb_endpoint_bulk_in
+						// 		.transfer_complete) {
+						// 	__asm__("nop");
+						// }
 
 						bit_buffer_index = 0;
-					}
+					// }
 
 					sample_count = 0;
 					mag2_sum = 0;
