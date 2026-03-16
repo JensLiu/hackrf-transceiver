@@ -42,6 +42,7 @@
 #include "platform_detect.h"
 
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include "uart.h"
 
@@ -698,33 +699,6 @@ void rx_mode(uint32_t seq)
 	transceiver_shutdown();
 }
 #else
-static void rx_standalone_autostart(void)
-{
-	// set_sample_rate(SAMPLE_RATE);
-	// set_baseband_filter_bandwidth(BASEBAND_FILTER_BW);
-	// set_centre_frequency(CENTRE_FREQ);
-	// rx_set_rf_gain(RF_GAIN);
-	// rx_set_if_gain(IF_GAIN);
-	// rx_set_bb_gain(BB_GAIN);
-
-	// if (RADIO_OK !=
-	//     radio_set_antenna(
-	// 	    &radio,
-	// 	    RADIO_CHANNEL0,
-	// 	    RADIO_ANTENNA_BIAS_TEE,
-	// 	    (radio_antenna_t) {.enable = false})) {
-	// 	uart_printf("standalone RX setup failed: antenna");
-	// 	return;
-	// }
-
-	// if (RADIO_OK != radio_set_trigger_enable(&radio, RADIO_CHANNEL0, false)) {
-	// 	uart_printf("standalone RX setup failed: trigger");
-	// 	return;
-	// }
-
-	request_transceiver_mode(TRANSCEIVER_MODE_RX);
-	uart_printf("standalone RX autostart requested\n");
-}
 
 void rx_mode(uint32_t seq)
 {
@@ -778,38 +752,24 @@ void rx_mode(uint32_t seq)
 				sample_count++;
 
 				if (sample_count >= RX_BIT_SAMPLES) {
-					// DONT'T DO INTEGER DIVIDE BY CONSTANT
-					// Update noise floor (slow moving average)
-					noise_floor = (noise_floor * 15 + mag2_sum) / 16;
-
-					// Adaptive threshold
+					// NOTE: DONT'T DO INTEGER DIVIDE BY CONSTANT in mag_sum to get average
+					const uint32_t mag2_ave = mag2_sum >> 10; // divide by 1024
 					const uint32_t adaptive_threshold =
 						noise_floor + RX_THRESHOLD_MARGIN;
 
 					current_bit = (mag2_sum > adaptive_threshold);
-					uart_printf("%d\t", mag2_sum);
+					uart_printf("%llu, %d\n", mag2_sum, current_bit);
 
-					// bit_buffer[bit_buffer_index++] = current_bit;
-					// if (bit_buffer_index >= RX_BIT_PACKET_SIZE) {
-					// 	uart_printf("\r\n");
-						// memcpy(tx_buffer,
-						//        bit_buffer,
-						//        RX_BIT_PACKET_SIZE);
-
-						// usb_transfer_schedule_block(
-						// 	&usb_endpoint_bulk_in,
-						// 	tx_buffer,
-						// 	RX_BIT_PACKET_SIZE,
-						// 	transceiver_bulk_transfer_complete,
-						// 	NULL);
-
-						// while (!usb_endpoint_bulk_in
-						// 		.transfer_complete) {
-						// 	__asm__("nop");
-						// }
-
-						bit_buffer_index = 0;
-					// }
+					// Update noise floor (slow moving average)
+					if (current_bit == 0) {
+						// Fast update for noise (alpha ~ 1/16)
+						noise_floor =
+							(uint32_t) (((uint64_t) noise_floor * 15 + mag2_sum) >> 4);
+					} else {
+						// Slow leak for signal/interference (alpha ~ 1/256)
+						noise_floor =
+							(uint32_t) (((uint64_t) noise_floor * 255 + mag2_sum) >> 8);
+					}
 
 					sample_count = 0;
 					mag2_sum = 0;
