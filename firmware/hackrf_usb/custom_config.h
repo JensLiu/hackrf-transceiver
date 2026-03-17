@@ -3,9 +3,14 @@
 
 // BIT PATTERN TEST
 // #define CUSTOM_BIT_PATTERN {1, 0, 1, 0, 1, 0, 1, 0}
-#define CUSTOM_BIT_PATTERN {1, 0, 1, 1, 0, 1, 1, 1, 0}
-// #define CUSTOM_BIT_PATTERN {1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 0, 0}
-#define RX_BIT_PACKET_SIZE 12
+// #define CUSTOM_BIT_PATTERN {1, 0, 1, 1, 0, 1, 1, 1, 0}
+#define CUSTOM_BIT_PATTERN {1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 0, 0}
+#define RX_BIT_PACKET_SIZE 128
+
+// output methods
+// #define DECODE_PRINT_USB_BATCH
+// #define DECODE_PRINT_UART_EACH
+// #define DECODE_PRINT_UART_BATCH
 
 // RADIO PARAMETERS
 #define UART_WORKING
@@ -16,7 +21,7 @@
 	#define SINE_FREQ           100000
 	#define TX_BIT_SAMPLES      1000
 	#define RX_BIT_SAMPLES      1000 /* Less bit samples means more transfer overhead! */
-	#define RX_THRESHOLD_MARGIN 20
+	#define RX_THRESHOLD_MARGIN 50
 	#define TX_RF_GAIN          30
 	#define TX_IF_GAIN          47
 	#define RX_IF_GAIN          32
@@ -45,10 +50,10 @@
 
 // USB_TRANSFER SIZE
 #if defined CUSTOM_TX_MODE || defined CUSTOM_RX_MODE
-	#define USB_TRANSFER_SIZE 256
+	#define BATCH_SAMPLE_SIZE 256
 #endif
-#ifndef USB_TRANSFER_SIZE
-	#define USB_TRANSFER_SIZE 0x4000 // < Original Firmware
+#ifndef BATCH_SAMPLE_SIZE
+	#define BATCH_SAMPLE_SIZE 0x4000 /* < Original Firmware */
 #endif
 
 #ifndef RX_THRESHOLD_MARGIN

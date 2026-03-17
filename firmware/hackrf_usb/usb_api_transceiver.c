@@ -724,7 +724,7 @@ void rx_mode(uint32_t seq)
 	set_antenna_enable(RX_ANTENNA_ENABLE);
 	#endif
 
-	uint32_t usb_count = 0;
+	uint32_t consume_count = 0;
 	transceiver_startup(TRANSCEIVER_MODE_RX);
 	baseband_streaming_enable(&sgpio_config);
 
@@ -732,17 +732,17 @@ void rx_mode(uint32_t seq)
 	uint32_t sample_count = 0;
 	uint64_t mag2_sum = 0; // Sum of magnitude squared
 	bool current_bit = false;
-	uint8_t bit_buffer[USB_TRANSFER_SIZE]; // Buffer to store detected bits
+	uint8_t bit_buffer[RX_BIT_PACKET_SIZE]; // Buffer to store detected bits
 	uint32_t bit_buffer_index = 0;
-	uint8_t tx_buffer[USB_TRANSFER_SIZE]; // Separate buffer for USB transfers
+	uint8_t tx_buffer[RX_BIT_PACKET_SIZE]; // Separate buffer for USB transfers
 	uint32_t noise_floor = 0;
 
 	while (1) {
-		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
+		if ((m0_state.m0_count - consume_count) >= BATCH_SAMPLE_SIZE) {
 			uint8_t* buffer =
-				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK];
+				&usb_bulk_buffer[consume_count & USB_BULK_BUFFER_MASK];
 
-			for (uint32_t i = 0; i < USB_TRANSFER_SIZE; i += 2) {
+			for (uint32_t i = 0; i < BATCH_SAMPLE_SIZE; i += 2) {
 				int32_t I = (int8_t) buffer[i];
 				int32_t Q = (int8_t) buffer[i + 1];
 
@@ -752,25 +752,48 @@ void rx_mode(uint32_t seq)
 				sample_count++;
 
 				if (sample_count >= RX_BIT_SAMPLES) {
-					// NOTE: DONT'T DO INTEGER DIVIDE BY CONSTANT in mag_sum to get average
-					const uint32_t mag2_ave = mag2_sum >> 10; // divide by 1024
+					const uint32_t mag2_avg =
+						mag2_sum / RX_BIT_SAMPLES;
+					noise_floor = (noise_floor * 15 + mag2_avg) / 16;
 					const uint32_t adaptive_threshold =
 						noise_floor + RX_THRESHOLD_MARGIN;
+					current_bit = (mag2_avg > adaptive_threshold);
 
-					current_bit = (mag2_sum > adaptive_threshold);
-					uart_printf("%llu, %d\n", mag2_sum, current_bit);
+					// uart_printf("%d, %lld\n", current_bit, (long long) mag2_avg);
+					// uart_printf("%d\t%d\n", current_bit, mag2_avg);
 
-					// Update noise floor (slow moving average)
-					if (current_bit == 0) {
-						// Fast update for noise (alpha ~ 1/16)
-						noise_floor =
-							(uint32_t) (((uint64_t) noise_floor * 15 + mag2_sum) >> 4);
-					} else {
-						// Slow leak for signal/interference (alpha ~ 1/256)
-						noise_floor =
-							(uint32_t) (((uint64_t) noise_floor * 255 + mag2_sum) >> 8);
+					// data transfer
+	#ifdef DECODE_PRINT_UART_BATCH
+					bit_buffer[bit_buffer_index++] = current_bit;
+					if (bit_buffer_index >= RX_BIT_PACKET_SIZE) {
+						for (int i = 0; i < RX_BIT_PACKET_SIZE;
+						     i++) {
+							uart_printf("%d", bit_buffer[i]);
+						}
+						uart_printf("\n");
+						bit_buffer_index = 0;
 					}
-
+	#endif
+	#ifdef DECODE_PRINT_UART_EACH
+					uart_printf("%d", current_bit);
+	#endif
+	#ifdef DECODE_PRINT_USB_BATCH
+					bit_buffer[bit_buffer_index++] = current_bit;
+					if (bit_buffer_index >= RX_BIT_PACKET_SIZE) {
+						memcpy(tx_buffer, bit_buffer, RX_BIT_PACKET_SIZE);
+						usb_transfer_schedule_block(
+							&usb_endpoint_bulk_in,
+							tx_buffer,
+							RX_BIT_PACKET_SIZE,
+							transceiver_bulk_transfer_complete,
+							NULL);
+						while (!usb_endpoint_bulk_in
+								.transfer_complete) {
+							__asm__("nop");
+						}
+						bit_buffer_index = 0;
+					}
+	#endif
 					sample_count = 0;
 					mag2_sum = 0;
 				}
@@ -782,8 +805,8 @@ void rx_mode(uint32_t seq)
 			// 		m0_state.num_shortfalls);
 			// }
 
-			usb_count += USB_TRANSFER_SIZE;
-			m0_state.m4_count += USB_TRANSFER_SIZE;
+			consume_count += BATCH_SAMPLE_SIZE;
+			m0_state.m4_count += BATCH_SAMPLE_SIZE;
 		}
 	}
 
