@@ -78,11 +78,6 @@ typedef struct {
 
 set_sample_r_params_t set_sample_r_params;
 
-volatile bool usb_ready = true;
-uint8_t tx_buffers[2][RX_BIT_PACKET_SIZE];
-uint8_t current_tx_buf = 0;
-volatile uint32_t usb_overflow_count = 0;
-
 usb_request_status_t usb_vendor_request_set_baseband_filter_bandwidth(
 	usb_endpoint_t* const endpoint,
 	const usb_transfer_stage_t stage)
@@ -399,7 +394,6 @@ void request_transceiver_mode(transceiver_mode_t mode)
 static uint8_t tx_bit_pattern[TX_PATTERN_MAX_BITS];
 static uint32_t tx_bit_pattern_len = 0;
 static uint32_t tx_bit_pattern_index = 0;
-static uint32_t preamble_bit_index = 0;
 
 static void tx_set_bit_pattern(const uint8_t* bits, uint32_t len)
 {
@@ -425,75 +419,53 @@ static void tx_set_default_pattern(void)
 	tx_set_bit_pattern(default_pattern, sizeof(default_pattern));
 }
 
-
-
 void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 {
-    // Persistent state
-    static uint64_t total_samples_sent = 0;
-    static bool sending_preamble = false;
-    static uint32_t table_phase = 0;   
-    static uint32_t sample_in_bit = 0; 
-    static uint32_t preamble_bit_index = 0;
-    static uint32_t tx_bit_pattern_index = 0;
+	const uint32_t BYTES_PER_SAMPLE = 2; // I + Q
+	const uint8_t MID_SCALE = 0;         // unsigned zero level
+	const uint32_t SINE_TABLE_MASK = SINE_TABLE_SIZE - 1;
 
-    const uint32_t BYTES_PER_SAMPLE = 2; 
-    const uint8_t MID_SCALE = 0;         
-    const uint32_t SINE_TABLE_MASK = SINE_TABLE_SIZE - 1;
-    const uint32_t phase_increment = (SINE_FREQ * SINE_TABLE_SIZE) / TX_SAMPLE_RATE;
+	// phase increment through the sine table
+	const uint32_t phase_increment = (SINE_FREQ * SINE_TABLE_SIZE) / TX_SAMPLE_RATE;
 
-    uint32_t total_samples = len / BYTES_PER_SAMPLE;
+	// persistent state
+	static uint32_t table_phase = 0;   // index into sine_table
+	static uint32_t sample_in_bit = 0; // 0…BIT_SAMPLES−1
 
-    for (uint32_t s = 0; s < total_samples; s++) {
-        uint32_t i = s * BYTES_PER_SAMPLE;
-        bool bit;
+	// if (tx_bit_pattern_len == 0) {
+	// 	memset(buffer, 0, len);
+	// 	return;
+	// }
 
-        // 1. Select the bit based on current mode
-        if (sending_preamble) {
-            bit = PREAMBLE16[preamble_bit_index];
-        } else {
-            bit = tx_bit_pattern[tx_bit_pattern_index];
-        }
+	uint32_t total_samples = len / BYTES_PER_SAMPLE;
+	// if (len % BYTES_PER_SAMPLE != 0) {
+	// 	// Handle the case where len is not a multiple of BYTES_PER_SAMPLE
+	// 	uart_printf(
+	// 		"Warning: buffer length %u is not a multiple of bytes per sample %u\n",
+	// 		len,
+	// 		BYTES_PER_SAMPLE);
+	// }
 
-        // 2. Output to buffer
-        if (bit) {
-            buffer[i] = sine_table[2 * table_phase];
-            buffer[i + 1] = sine_table[2 * table_phase + 1];
-        } else {
-            buffer[i] = MID_SCALE;
-            buffer[i + 1] = MID_SCALE;
-        }
+	for (uint32_t s = 0; s < total_samples; s++) {
+		uint32_t i = s * BYTES_PER_SAMPLE;
+		if (tx_bit_pattern[tx_bit_pattern_index]) {
+			// — "1": sine output
+			buffer[i] = sine_table[2 * table_phase];
+			buffer[i + 1] = sine_table[2 * table_phase + 1];
+		} else {
+			// — "0": flat mid-scale
+			buffer[i] = MID_SCALE;
+			buffer[i + 1] = MID_SCALE;
+		}
+		table_phase = (table_phase + phase_increment) & SINE_TABLE_MASK;
 
-        // 3. Update phase and global sample count
-        table_phase = (table_phase + phase_increment) & SINE_TABLE_MASK;
-        total_samples_sent++;
-
-        // 4. Update Bit Timing and Mode Switching
-        // ONLY change state when a full bit (TX_BIT_SAMPLES) has finished
-        if (++sample_in_bit >= TX_BIT_SAMPLES) {
-            sample_in_bit = 0;
-
-            if (sending_preamble) {
-                preamble_bit_index++;
-                // If preamble is finished, switch back to data
-                if (preamble_bit_index >= 16) { 
-                    sending_preamble = false;
-                    preamble_bit_index = 0;
-                    total_samples_sent = 0; // Reset counter for next interval
-                }
-            } else {
-                tx_bit_pattern_index = (tx_bit_pattern_index + 1) % tx_bit_pattern_len;
-                
-                // ONLY trigger preamble swap if we've sent enough data samples
-                // AND we are at the end of a data bit
-                if (total_samples_sent >= PREAMBLE_INTERVAL_SAMPLES*10) {
-                    sending_preamble = true;
-                    preamble_bit_index = 0;
-                    // Note: total_samples_sent is reset once the preamble finishes
-                }
-            }
-        }
-    }
+		// advance sample count; after BIT_SAMPLES, move to next bit
+		if (++sample_in_bit >= TX_BIT_SAMPLES) {
+			sample_in_bit = 0;
+			tx_bit_pattern_index =
+				(tx_bit_pattern_index + 1) % tx_bit_pattern_len;
+		}
+	}
 }
 
 void transceiver_shutdown(void)
@@ -605,13 +577,10 @@ usb_request_status_t usb_vendor_request_set_rx_overrun_limit(
 	return USB_REQUEST_STATUS_OK;
 }
 
-
-
 void transceiver_bulk_transfer_complete(void* user_data, unsigned int bytes_transferred)
 {
 	(void) user_data;
 	m0_state.m4_count += bytes_transferred;
-	usb_ready = true;
 }
 
 float _rx_lut[0xff];
@@ -769,137 +738,63 @@ void rx_mode(uint32_t seq)
 	uint8_t tx_buffer[RX_BIT_PACKET_SIZE]; // Separate buffer for USB transfers
 	uint32_t noise_floor = 0;
 
-	// Variables for samples window alignment
-	uint32_t mag2_window[WINDOW];
-	uint32_t window_index = 0;
-    bool synced = false;
-	
-	uint8_t preamble_shift = 0;
-
-	// State Machine 
-	typedef enum {
-		STATE_IDLE,        // Looking for 10101010 pattern
-		STATE_REFINE_SYNC, // Pattern found, now finding the exact peak
-		STATE_LOCKED       // Synchronized, reading data bits
-	} rx_state_t;
-
-	rx_state_t state = STATE_IDLE;
-	uint8_t pattern_shift = 0;
-	uint32_t sample_in_bit_counter = 0;
-
-	// Integration variables
-	uint64_t sliding_sum = 0;
-	uint32_t window_buffer[RX_BIT_SAMPLES]; // 1000 samples
-	uint32_t window_ptr = 0;
-	uint64_t max_energy_found = 0;
-	uint32_t samples_since_max = 0;
-
 	while (1) {
 		if ((m0_state.m0_count - consume_count) >= BATCH_SAMPLE_SIZE) {
-			uint8_t* buffer = &usb_bulk_buffer[consume_count & USB_BULK_BUFFER_MASK];
-
-			// Variables for the Sample-Level Edge Tracker
-			uint32_t samples_in_current_state = 0;
-			bool last_sample_hi = false;
-			uint8_t bits_detected = 0;
-			uint8_t preamble_window_detector = 0;
+			uint8_t* buffer =
+				&usb_bulk_buffer[consume_count & USB_BULK_BUFFER_MASK];
 
 			for (uint32_t i = 0; i < BATCH_SAMPLE_SIZE; i += 2) {
 				int32_t I = (int8_t) buffer[i];
 				int32_t Q = (int8_t) buffer[i + 1];
+
 				uint32_t mag2 = I * I + Q * Q;
-			
+				// uart_printf("%d\t", mag2);
 				mag2_sum += mag2;
 				sample_count++;
-				switch (state) {
-					case STATE_IDLE:
-						// 1. Track edges at the bit level with no synchronization
-						if (sample_count >= RX_BIT_SAMPLES) {
-							const uint32_t mag2_avg = mag2_sum / RX_BIT_SAMPLES;
-							noise_floor = (noise_floor * 15 + mag2_avg) / 16;
-							const uint32_t adaptive_threshold = noise_floor + RX_THRESHOLD_MARGIN;
-							current_bit = (mag2_avg > adaptive_threshold);
 
-							//preamble_window_detector = (preamble_window_detector << 1) | current_bit;
+				if (sample_count >= RX_BIT_SAMPLES) {
+					const uint32_t mag2_avg = mag2_sum / RX_BIT_SAMPLES;
+					noise_floor = (noise_floor * 15 + mag2_avg) / 16;
+					const uint32_t adaptive_threshold = noise_floor + RX_THRESHOLD_MARGIN;
+					current_bit = (mag2_avg > adaptive_threshold);
 
-
-							bit_buffer[bit_buffer_index++] = current_bit;
-
-							// Once we've seen enough transitions (8 bits of 10101010)
-							if (preamble_window_detector == 0xAA) {
-								state = STATE_REFINE_SYNC;
-								max_energy_found = 0;
-								samples_since_max = 0;
-								bits_detected = 0;
-							} 
-
-							sample_count = 0;
-							mag2_sum = 0;
-						}
-
-						break;
-			
-					case STATE_REFINE_SYNC:
-
-						// 2. Find the EXACT peak energy center of the NEXT pulse
-						if (sliding_sum > max_energy_found) {
-							max_energy_found = sliding_sum;
-							samples_since_max = 0;
-						} else {
-							samples_since_max++;
-						}
-
-						//bit_buffer[bit_buffer_index++] = current_bit;
-						bit_buffer[bit_buffer_index++] = 1; //Debug
-
-						// After we pass the peak and it drops slightly (50 sample confirm)
-						if (samples_since_max > 100000000) {
-							state = STATE_LOCKED;
-							// SYNC OFFSET: We are 'samples_since_max' past the peak.
-							// We want our next bit window to start exactly half a bit after the peak.
-							// Or simply reset sample_count to align to this peak center.
-							sample_count = samples_since_max; 
-							mag2_sum = 0;
-							bit_buffer_index = 0;
-						}
-
-						break;
-
-					case STATE_LOCKED:
-						if (sample_count >= RX_BIT_SAMPLES) {
-							const uint32_t mag2_avg = mag2_sum / RX_BIT_SAMPLES;
-							noise_floor = (noise_floor * 15 + mag2_avg) / 16;
-							const uint32_t adaptive_threshold = noise_floor + RX_THRESHOLD_MARGIN;
-							current_bit = (mag2_avg > adaptive_threshold);
-	
-							// High-precision bit decision
-							bit_buffer[bit_buffer_index++] = current_bit;
-							
-							sample_count = 0;
-							mag2_sum = 0;
-						}
-						break;
-					}
-
+					bit_buffer[bit_buffer_index++] = current_bit;
 					if (bit_buffer_index >= RX_BIT_PACKET_SIZE) {
-					memcpy(tx_buffer, bit_buffer, RX_BIT_PACKET_SIZE);
-					usb_transfer_schedule_block(
-						&usb_endpoint_bulk_in,
-						tx_buffer,
-						RX_BIT_PACKET_SIZE,
-						transceiver_bulk_transfer_complete,
-						NULL);
-					while (!usb_endpoint_bulk_in.transfer_complete) {
-						__asm__("nop");
+						for (int i = 0; i < RX_BIT_PACKET_SIZE;
+						     i++) {
+							uart_printf("%d", bit_buffer[i]);
+						}
+						uart_printf("\n");
+						bit_buffer_index = 0;
 					}
-					bit_buffer_index = 0;
-				}
 
+					uart_printf("%d", current_bit);
+
+					bit_buffer[bit_buffer_index++] = current_bit;
+					if (bit_buffer_index >= RX_BIT_PACKET_SIZE) {
+						memcpy(tx_buffer, bit_buffer, RX_BIT_PACKET_SIZE);
+						usb_transfer_schedule_block(
+							&usb_endpoint_bulk_in,
+							tx_buffer,
+							RX_BIT_PACKET_SIZE,
+							transceiver_bulk_transfer_complete,
+							NULL);
+						while (!usb_endpoint_bulk_in
+								.transfer_complete) {
+							__asm__("nop");
+						}
+						bit_buffer_index = 0;
+					}
+
+					sample_count = 0;
+					mag2_sum = 0;
+				}
 			}
-		consume_count += BATCH_SAMPLE_SIZE;
-		m0_state.m4_count += BATCH_SAMPLE_SIZE;
+			consume_count += BATCH_SAMPLE_SIZE;
+			m0_state.m4_count += BATCH_SAMPLE_SIZE;
 		}
 	}
+
 	transceiver_shutdown();
 }
 #endif
