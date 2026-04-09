@@ -1,5 +1,5 @@
 // CUSTOM LOGICS
-#define RX_MODE
+#define CUSTOM_RX_MODE
 
 // BIT PATTERN TEST
 // #define CUSTOM_BIT_PATTERN {1, 0, 1, 0, 1, 0, 1, 0}
@@ -8,8 +8,6 @@
 #define RX_BIT_PACKET_SIZE 128
 static const uint8_t PREAMBLE16[] = {
     1,0,1,0,1,0,1,0,
-    1,0,1,0,1,0,1,0,
-	1,0,1,0,1,0,1,0,
     1,0,1,0,1,0,1,0,
 };
 
@@ -39,9 +37,9 @@ static uint32_t current_offset = 0;
 	#define RX_THRESHOLD_MARGIN 50
 	#define TX_RF_GAIN          64 // 30
 	#define TX_IF_GAIN          64 // 47
-	#define RX_IF_GAIN          32
-	#define RX_RF_GAIN          32
-	#define RX_BB_GAIN          32
+	#define RX_IF_GAIN          36
+	#define RX_RF_GAIN          36
+	#define RX_BB_GAIN          36
 	#define TX_ANTENNA_ENABLE   false
 	#define RX_ANTENNA_ENABLE   false
 #endif
