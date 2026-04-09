@@ -6,7 +6,20 @@
 // #define CUSTOM_BIT_PATTERN {1, 0, 1, 1, 0, 1, 1, 1, 0}
 #define CUSTOM_BIT_PATTERN {1, 0, 0, 1, 1, 0, 1, 1, 1, 0, 0, 0}
 #define RX_BIT_PACKET_SIZE 128
+static const uint8_t PREAMBLE16[] = {
+    1,0,1,0,1,0,1,0,
+    1,0,1,0,1,0,1,0,
+};
 
+static uint8_t shift_reg = 0;
+static uint32_t bit_count = 0;
+
+#define PREAMBLE_INTERVAL_SAMPLES (TX_SAMPLE_RATE * 1)
+#define WINDOW RX_BIT_SAMPLES
+
+static uint64_t best_energy = 0;
+static uint32_t best_offset = 0;
+static uint32_t current_offset = 0;
 // output methods
 // #define DECODE_PRINT_USB_BATCH
 // #define DECODE_PRINT_UART_EACH
@@ -22,11 +35,11 @@
 	#define TX_BIT_SAMPLES      1000
 	#define RX_BIT_SAMPLES      1000 /* Less bit samples means more transfer overhead! */
 	#define RX_THRESHOLD_MARGIN 50
-	#define TX_RF_GAIN          30
-	#define TX_IF_GAIN          47
-	#define RX_IF_GAIN          32
-	#define RX_RF_GAIN          30
-	#define RX_BB_GAIN          30
+	#define TX_RF_GAIN          64 // 30
+	#define TX_IF_GAIN          64 // 47
+	#define RX_IF_GAIN          36
+	#define RX_RF_GAIN          36
+	#define RX_BB_GAIN          36
 	#define TX_ANTENNA_ENABLE   false
 	#define RX_ANTENNA_ENABLE   false
 #endif
@@ -59,6 +72,8 @@
 #ifndef RX_THRESHOLD_MARGIN
 	#define RX_THRESHOLD_MARGIN 0
 #endif
+
+#define USB_TRANSFER_SIZE 0x4000
 
 // BIT PATTERN SIZE
 #define TX_PATTERN_MAX_BITS 64U
