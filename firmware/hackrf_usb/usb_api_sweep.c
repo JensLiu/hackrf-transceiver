@@ -20,6 +20,7 @@
  * Boston, MA 02110-1301, USA.
  */
 
+#include "custom_config.h"
 #include "usb_api_sweep.h"
 #include "usb_queue.h"
 #include <stddef.h>

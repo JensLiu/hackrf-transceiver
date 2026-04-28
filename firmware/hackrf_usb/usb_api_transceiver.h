@@ -24,6 +24,7 @@
 #ifndef __USB_API_TRANSCEIVER_H__
 #define __USB_API_TRANSCEIVER_H__
 
+#include "mac_protocol.h"
 #include <hackrf_core.h>
 #include <usb_type.h>
 #include <usb_request.h>
@@ -81,6 +82,8 @@ void transceiver_shutdown(void);
 void rx_mode(uint32_t seq);
 void tx_mode(uint32_t seq);
 void off_mode(uint32_t seq);
+void phy_tx_step(packet_t* pkt_out, uint8_t dst);
+bool phy_rx_step(packet_t* pkt_in, mac_frame_t* frame);
 
 void init_rx_lookup_table(void);
 

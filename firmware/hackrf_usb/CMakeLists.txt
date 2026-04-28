@@ -58,6 +58,7 @@ set(SRC_M4
 	usb_api_m0_state.c
 	usb_api_register.c
 	usb_api_spiflash.c
+	mac_protocol.c
 	usb_api_transceiver.c
 	usb_api_operacake.c
 	usb_api_sweep.c
@@ -122,5 +123,6 @@ if(BOARD STREQUAL "RAD1O")
 		"${PATH_HACKRF_FIRMWARE_COMMON}/ui_rad1o.c"
 	)
 endif()
+
 
 DeclareTargets()

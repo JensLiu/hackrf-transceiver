@@ -39,6 +39,8 @@
 #include <rom_iap.h>
 #include "usb_descriptor.h"
 
+#include "custom_config.h"
+#include "mac_protocol.h"
 #include "usb_device.h"
 #include "usb_endpoint.h"
 #include "usb_api_board_info.h"
@@ -66,7 +68,6 @@
 
 // CUSTOM IMPORTS
 #include "uart.h"
-#include "custom_config.h"
 
 extern uint32_t __m0_start__;
 extern uint32_t __m0_end__;
@@ -369,12 +370,22 @@ int main(void)
 		clkin_detect_init();
 	}
 
+	typedef enum {
+		STATE_RX,
+		STATE_TX
+	} radio_state_t;
+	
+	static radio_state_t state = STATE_RX;
+	bool next_tx = false;
+
+	if (mac_device_id == 0) {
+		state = STATE_TX;   // ring starter
+	} else {
+		state = STATE_RX;   // everyone else listens
+	}
+
 	while (true) {
-#ifdef CUSTOM_RX_MODE
-		rx_mode(0);
-#elif defined CUSTOM_TX_MODE
-		tx_mode(0);
-#else
+
 		transceiver_request_t request;
 
 		// Briefly disable USB interrupt so that we can
@@ -383,23 +394,26 @@ int main(void)
 		// changed together by request_transceiver_mode()
 		// called from the USB ISR.
 
-		nvic_disable_irq(NVIC_USB0_IRQ);
+/* 		nvic_disable_irq(NVIC_USB0_IRQ);
 		request = transceiver_request;
-		nvic_enable_irq(NVIC_USB0_IRQ);
+		nvic_enable_irq(NVIC_USB0_IRQ); */
+		
 
-		switch (request.mode) {
-		case TRANSCEIVER_MODE_OFF:
-			off_mode(request.seq);
-			break;
-		case TRANSCEIVER_MODE_RX:
-			rx_mode(request.seq);
-			break;
-		case TRANSCEIVER_MODE_TX:
-			tx_mode(request.seq);
-			break;
-		case TRANSCEIVER_MODE_RX_SWEEP:
-			sweep_mode(request.seq);
-			break;
+		packet_t pkt_in = {0};
+		packet_t pkt_out = {0};
+		mac_frame_t frame = {0};
+		uint8_t dst = 0x02;
+		static const uint8_t custom_data[] = CUSTOM_BYTE_PATTERN;
+
+
+		switch (state) {
+			case STATE_RX:
+				next_tx = phy_rx_step(&pkt_in, &frame);
+				break;
+			case STATE_TX:
+				phy_tx_step(&pkt_out, dst);
+				break;
+
 	#ifndef PRALINE
 		case TRANSCEIVER_MODE_CPLD_UPDATE:
 			cpld_update();
@@ -407,9 +421,18 @@ int main(void)
 	#endif
 		default:
 			break;
-		}
-#endif
+		
 	}
-
+/* 
+	// Final state machine for TX logic
+	if(next_tx == true){
+		state = STATE_TX;
+	}
+	else{
+		state = STATE_RX;
+	}
+ */
 	return 0;
 }
+}
+
