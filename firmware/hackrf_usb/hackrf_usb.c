@@ -377,14 +377,26 @@ int main(void)
 	
 	static radio_state_t state = STATE_RX;
 	bool next_tx = false;
-
+	state = STATE_RX;
 	if (mac_device_id == 0) {
 		state = STATE_TX;   // ring starter
 	} else {
 		state = STATE_RX;   // everyone else listens
 	}
+	bool stop = false;
 
-	while (true) {
+	packet_t pkt_in = {0};
+	packet_t pkt_out = {0};
+	mac_frame_t frame = {0};
+	uint8_t dst = 0x02;
+	uint8_t custom_data[] = CUSTOM_BYTE_PATTERN;
+
+	memcpy(pkt_out.data, custom_data, sizeof(custom_data));
+	pkt_out.len = sizeof(custom_data);
+
+
+
+	while (1) {
 
 		transceiver_request_t request;
 
@@ -399,30 +411,25 @@ int main(void)
 		nvic_enable_irq(NVIC_USB0_IRQ); */
 		
 
-		packet_t pkt_in = {0};
-		packet_t pkt_out = {0};
-		mac_frame_t frame = {0};
-		uint8_t dst = 0x02;
-		static const uint8_t custom_data[] = CUSTOM_BYTE_PATTERN;
-
-
 		switch (state) {
 			case STATE_RX:
 				next_tx = phy_rx_step(&pkt_in, &frame);
+				stop = true;
 				break;
 			case STATE_TX:
 				phy_tx_step(&pkt_out, dst);
 				break;
 
-	#ifndef PRALINE
-		case TRANSCEIVER_MODE_CPLD_UPDATE:
-			cpld_update();
-			break;
-	#endif
-		default:
-			break;
+			#ifndef PRALINE
+				case TRANSCEIVER_MODE_CPLD_UPDATE:
+					cpld_update();
+					break;
+			#endif
+				default:
+					break;
 		
 	}
+
 /* 
 	// Final state machine for TX logic
 	if(next_tx == true){
@@ -432,7 +439,8 @@ int main(void)
 		state = STATE_RX;
 	}
  */
-	return 0;
 }
+
+return 0;
 }
 

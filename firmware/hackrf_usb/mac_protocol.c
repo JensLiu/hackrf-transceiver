@@ -12,9 +12,10 @@
 
 // Bit stream used by PHY
 static bool mac_tx_bits[MAC_MAX_FRAME_SIZE_BITS];
-
+static uint8_t mac_tx_data[MAC_MAX_FRAME_SIZE];
 
 static uint32_t mac_tx_bits_len = 0;
+static uint32_t mac_tx_data_len = 0;
 
 // RX reconstruction
 static uint8_t mac_rx_bytes[MAC_MAX_FRAME_SIZE];
@@ -44,25 +45,38 @@ static uint8_t bits_to_byte(uint8_t* bits)
 
 // ================= TX =================
 
-bool* mac_get_tx_bits(uint32_t* len)
+static void mac_pack_bits_to_bytes(void)
 {
-    *len = mac_tx_bits_len;
-    return mac_tx_bits;
+    mac_tx_data_len = (mac_tx_bits_len + 7) / 8;
+    memset(mac_tx_data, 0, mac_tx_data_len);
+
+    for (uint32_t i = 0; i < mac_tx_bits_len; i++) {
+        if (mac_tx_bits[i]) {
+            mac_tx_data[i / 8] |= (1u << (7 - (i % 8)));   // MSB-first
+        }
+    }
 }
 
-bool* mac_get_tx_data(uint32_t* len)
+bool* mac_get_tx_bits(uint32_t* len)
 {
     if (len != NULL) {
         *len = mac_tx_bits_len;
     }
-
     return mac_tx_bits;
+}
+
+uint8_t* mac_get_tx_data(uint32_t* len)
+{
+    if (len != NULL) {
+        *len = mac_tx_data_len;
+    }
+    return mac_tx_data;
 }
 
 
 void mac_build_frame(uint8_t rx,
                      uint8_t next_tx,
-                     uint8_t payload_size,
+                     uint32_t payload_size,
                      uint8_t* payload
                      )
 {
@@ -77,12 +91,19 @@ void mac_build_frame(uint8_t rx,
     byte_to_bits(mac_device_id, mac_tx_bits, &mac_tx_bits_len);
     byte_to_bits(rx,            mac_tx_bits, &mac_tx_bits_len);
     byte_to_bits(next_tx,       mac_tx_bits, &mac_tx_bits_len);
-    byte_to_bits(payload_size,  mac_tx_bits, &mac_tx_bits_len);
+    byte_to_bits((payload_size >> 16) & 0xFF, mac_tx_bits, &mac_tx_bits_len);
+    byte_to_bits((payload_size >> 8)  & 0xFF, mac_tx_bits, &mac_tx_bits_len);
+    byte_to_bits((payload_size)       & 0xFF, mac_tx_bits, &mac_tx_bits_len);
 
     // 3. Payload
     for (uint8_t i = 0; i < payload_size; i++) {
         byte_to_bits(payload[i], mac_tx_bits, &mac_tx_bits_len);
     }
+
+
+    // Pack bits into bytes
+    mac_pack_bits_to_bytes();
+
 }
 
 // ================= RX =================
@@ -92,6 +113,8 @@ void mac_reset_rx(void)
     mac_rx_byte_index = 0;
     mac_rx_bit_count = 0;
     mac_rx_bit_accumulator = 0;
+
+
 }
 
 // Call this for EVERY decoded bit from your RX

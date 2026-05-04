@@ -57,6 +57,8 @@
 
 #include "usb_api_sweep.h"
 #include <math.h>
+#include "gpio_lpc.h"	
+#include "gpio.h"
 
 
 
@@ -437,13 +439,13 @@ static void tx_set_bit_pattern(const uint8_t* bits, uint32_t len)
 
 static void tx_set_default_pattern(void)
 {
-	static const uint8_t default_pattern[] = CUSTOM_BIT_PATTERN;
+	static const uint8_t default_pattern[] = CUSTOM_BYTE_PATTERN;
 	tx_set_bit_pattern(default_pattern, sizeof(default_pattern));
 }
 
 
 
-void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
+bool fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 {
     static uint32_t table_phase = 0;
     static uint32_t sample_in_bit = 0;
@@ -467,7 +469,7 @@ void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
         // ===== STREAM BIT FROM BYTE BUFFER =====
         uint8_t current_byte = tx_data_ptr[byte_index];
         bool bit = (current_byte >> (7 - bit_index)) & 0x01;
-
+		
         // ===== MODULATION =====
         if (bit) {
             buffer[i] = sine_table[2 * table_phase];
@@ -498,11 +500,12 @@ void fill_data_buffer(uint8_t* buffer, uint32_t len, uint32_t* _unused_phase)
 					bit_index = 0;
 					table_phase = 0;
 					sample_in_bit = 0;
-                    return;
+                    return true;
                 }
             }
         }
     }
+	return false;
 }
 
 void transceiver_shutdown(void)
@@ -614,8 +617,6 @@ usb_request_status_t usb_vendor_request_set_rx_overrun_limit(
 	return USB_REQUEST_STATUS_OK;
 }
 
-
-
 void transceiver_bulk_transfer_complete(void* user_data, unsigned int bytes_transferred)
 {
 	(void) user_data;
@@ -633,440 +634,6 @@ void init_rx_lookup_table(void)
 	uart_printf("RX Lookup Table initialised\n");
 }
 
-
-#ifndef CUSTOM_RX_MODE
-void rx_mode(uint32_t seq)
-{
-	//seq = ~seq;
-	uint32_t usb_count = 0;
-
-	transceiver_startup(TRANSCEIVER_MODE_RX);
-
-	baseband_streaming_enable(&sgpio_config);
-
-	while (transceiver_request.seq == seq) {
-		if ((m0_state.m0_count - usb_count) >= USB_TRANSFER_SIZE) {
-			// BEGIN signal process
-			// rx_signal_process(usb_count);
-			// END   signal process
-			usb_transfer_schedule_block(
-				&usb_endpoint_bulk_in,
-				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
-				USB_TRANSFER_SIZE,
-				transceiver_bulk_transfer_complete,
-				NULL);
-			usb_count += USB_TRANSFER_SIZE;
-		}
-	}
-
-	transceiver_shutdown();
-}
-#else
-
-
-bool process_bit(uint32_t mag, uint32_t* noise_fl){
-
-	const uint32_t mag2_avg = mag >> RX_BIT_SHIFT;
-	*noise_fl = (*noise_fl * 15 + mag2_avg) >> 4;
-	const uint32_t adaptive_threshold = *noise_fl + RX_THRESHOLD_MARGIN;
-	return (mag2_avg > adaptive_threshold);
-}
-
-void rx_mode(uint32_t seq)
-{
-
-	// Enable the cycle counter using our "Safe" names
-	SAFE_DEMCR |= SAFE_TRCENA;
-	SAFE_DWT_CYCCNT = 0; 
-	SAFE_DWT_CONTROL |= SAFE_CYCCNTENA;
-
-
-	#ifdef RX_SAMPLE_RATE
-	set_sample_rate(RX_SAMPLE_RATE);
-	#endif
-	#ifdef RX_BASEBAND_FILTER_BW
-	set_baseband_filter_bandwidth(RX_BASEBAND_FILTER_BW);
-	#endif
-	#ifdef CENTRE_FREQ
-	set_centre_frequency(CENTRE_FREQ);
-	#endif
-	#ifdef RX_RF_GAIN
-	rx_set_rf_gain(RX_RF_GAIN);
-	#endif
-	#ifdef RX_IF_GAIN
-	rx_set_if_gain(RX_IF_GAIN);
-	#endif
-	#ifdef RX_BB_GAIN
-	rx_set_bb_gain(RX_BB_GAIN);
-	#endif
-	#ifdef RX_ANTENNA_ENABLE
-	set_antenna_enable(RX_ANTENNA_ENABLE);
-	#endif
-
-	uint32_t consume_count = 0;
-	transceiver_startup(TRANSCEIVER_MODE_RX);
-	baseband_streaming_enable(&sgpio_config);
-
-	// Constants matching the transmitter
-	uint32_t sample_count = 0;
-	uint32_t mag2_sum = 0;
-	uint8_t preamble_window_detector = 0;
-	uint32_t noise_floor = 0;
-
-	uint32_t sample_count_A = 0;
-	uint32_t mag2_sum_A = 0;
-	uint8_t preamble_window_detector_A = 0;
-	uint32_t noise_floor_A = 0;
-
-/* 	uint32_t sample_count_B = RX_BIT_SAMPLES / 2;
-	uint32_t mag2_sum_B = 0;
-	uint8_t preamble_window_detector_B = 0;
-	uint32_t noise_floor_B = 0; */
-
-	bool current_bit = false;
-	//To transmit numbers instead of bits for debugging
-	//uint32_t bit_buffer[RX_BIT_PACKET_SIZE_DEBUG]; // Buffer to store detected bits
-	//uint32_t bit_buffer_index = 0;
-	//uint32_t tx_buffer[RX_BIT_PACKET_SIZE_DEBUG]; // Separate buffer for USB transfers
-
-	// Original to transmit bits
-	//uint8_t bit_buffer[RX_BIT_PACKET_SIZE_DEBUG]; // Buffer to store detected bits
-	uint16_t bit_buffer_index = 0;
-	//uint8_t tx_buffer[RX_BIT_PACKET_SIZE_DEBUG]; // Separate buffer for USB transfers
-	
-
-	
-	uint16_t circular_buffer = 0;
-	uint32_t synchronization_counter = 0;
-
-	// State Machine 
-	typedef enum {
-		STATE_IDLE,        // Looking for 10101010 pattern
-		STATE_REFINE_SYNC, // Pattern found, now finding the exact peak
-		STATE_LOCKED       // Synchronized, reading data bits
-	} rx_state_t;
-
-	rx_state_t state = STATE_IDLE;
-	uint8_t pattern_shift = 0;
-	uint32_t sample_in_bit_counter = 0;
-
-	// Integration variables
-	uint64_t sliding_sum = 0;
-	uint64_t max_energy_found = 0;
-	uint32_t samples_since_max = 0;
-
-
-	static uint32_t energy_window[RX_BIT_SAMPLES] = {0}; // RX_BIT_SAMPLES samples
-	// Force the buffer into the general RAM area, away from the Stack
-	static uint8_t bit_buffer[RX_BIT_PACKET_SIZE_DEBUG] __attribute__((section(".data")));
-	static uint8_t tx_buffer[RX_BIT_PACKET_SIZE_DEBUG] __attribute__((section(".data")));
-
-	static uint8_t first_word = 0;
-	static bool synchronized = false;
-
-
-	while (1) {
-		if ((m0_state.m0_count - consume_count) >= BATCH_SAMPLE_SIZE) {
-			uint8_t* buffer = &usb_bulk_buffer[consume_count & USB_BULK_BUFFER_MASK];
-
-
-			uint32_t start_time = SAFE_DWT_CYCCNT; // Start timer
-
-
-			for (uint32_t i = 0; i < BATCH_SAMPLE_SIZE; i += 2) {
-				int32_t I = (int8_t) buffer[i];
-				int32_t Q = (int8_t) buffer[i + 1];
-				uint32_t mag2 = I * I + Q * Q;
-			
-				
-				switch (state) {
-					
-					case STATE_IDLE:
-						mag2_sum_A += mag2;
-						sample_count_A++;
-
-/* 						mag2_sum_B += mag2;
-						sample_count_B++;
-						 */
-						
-						// 1. Track edges at the bit level with no synchronization
-						if (sample_count_A >= RX_BIT_SAMPLES) {
-							const uint32_t mag2_avg = mag2_sum_A >> RX_BIT_SHIFT;
-							noise_floor_A = (noise_floor_A * 15 + mag2_avg) >> 4;
-							const uint32_t adaptive_threshold = noise_floor_A + RX_THRESHOLD_MARGIN;
-							bool current_bit = (mag2_avg > adaptive_threshold);
-
-							preamble_window_detector_A = (preamble_window_detector_A << 1) | current_bit;
-
-							//bit_buffer[bit_buffer_index++] = preamble_window_detector_A & 1;
-							sample_count_A = 0;
-							mag2_sum_A = 0;
-
-
-							// Once we've seen enough transitions (8 bits of 10101010)
-							if (preamble_window_detector_A == 0xAA) {
-							state = STATE_REFINE_SYNC;
-							max_energy_found = 0;
-							samples_since_max = 0;
-
-							synchronization_counter = 0;
-							sample_count = 0;
-							mag2_sum = 0;
-							noise_floor = noise_floor_A;
-							memset(energy_window, 0, sizeof(energy_window));
-    						circular_buffer = 0;
-							sliding_sum=0;
-							synchronized = false;
-							break;
-							} 
-
-						}
-
-	/* 					// 1. Track edges at the bit level with no synchronization
-						if (sample_count_B >= RX_BIT_SAMPLES) {
-							const uint32_t mag2_avg = mag2_sum_B >> RX_BIT_SHIFT;
-							noise_floor_B = (noise_floor_B* 15 + mag2_avg) >> 4;
-							const uint32_t adaptive_threshold = noise_floor_B + RX_THRESHOLD_MARGIN;
-							bool current_bit = (mag2_avg > adaptive_threshold);
-
-							preamble_window_detector_B = (preamble_window_detector_B << 1) | current_bit;
-
-							//bit_buffer[bit_buffer_index++] = preamble_window_detector_B & 1;
-							sample_count_B = 0;
-							mag2_sum_B = 0;
-
-
-							// Once we've seen enough transitions (8 bits of 10101010)
-							if (preamble_window_detector_B == 0xAA) {
-							state = STATE_REFINE_SYNC;
-							max_energy_found = 0;
-							samples_since_max = 0;
-
-							synchronization_counter = 0;
-							sample_count = 0;
-							mag2_sum = 0;
-							noise_floor = noise_floor_B;
-							memset(energy_window, 0, sizeof(energy_window));
-    						circular_buffer = 0;
-							sliding_sum=0;
-							synchronized = false;
-							break;
-							} 
-
-						} */
-
-
-					break;
-
-					case STATE_REFINE_SYNC:
-						
-						mag2_sum += mag2;
-						sample_count++;
-						synchronization_counter += 1; // make sure that 8 bits are passed
-
-						circular_buffer++;
-						if(circular_buffer == RX_BIT_SAMPLES){
-							circular_buffer = 0;
-						}
-
-						sliding_sum -= energy_window[circular_buffer];
-						energy_window[circular_buffer] = mag2;
-						sliding_sum += energy_window[circular_buffer];
-
-						
-						// 2. Find the EXACT peak energy center of the NEXT pulse
-						if (sliding_sum > max_energy_found) {
-							max_energy_found = sliding_sum;
-							samples_since_max = 0;
-						} else {
-							samples_since_max+=1;
-						}
-						
-						//bit_buffer[bit_buffer_index++] = current_bit;
-						//bit_buffer[bit_buffer_index++] = 1; //Debug
-						if (sample_count >= RX_BIT_SAMPLES) {
-							const uint32_t mag2_avg = mag2_sum / RX_BIT_SAMPLES;
-							noise_floor = (noise_floor * 15 + mag2_avg) >> 4;
-							const uint32_t adaptive_threshold = noise_floor + RX_THRESHOLD_MARGIN;
-							bool current_bit;
-							current_bit = (mag2_avg > adaptive_threshold);
-							//bit_buffer[bit_buffer_index++] = current_bit;
-							sample_count = 0;
-							mag2_sum = 0;
-							first_word = (first_word << 1) | current_bit;
-							if((first_word == 0x99) && (synchronized == true)){
-								state = STATE_LOCKED;
-								bit_buffer_index = 0;
-							}
-
-
-						}
-
-						// After we pass the peak and it drops slightly (50 sample confirm)
-						
-						if ((samples_since_max > 700) && (synchronization_counter > 6 * RX_BIT_SAMPLES) && (synchronized == false)) {
-							// SYNC OFFSET: We are 'samples_since_max' past the peak.
-							// We want our next bit window to start exactly half a bit after the peak.
-							// Or simply reset sample_count to align to this peak center.
-							sample_count = samples_since_max % RX_BIT_SAMPLES; 
-							mag2_sum = 0;
-							bit_buffer_index = 0;
-							synchronized = true;
-						}
-
-					break;
-
-					case STATE_LOCKED:
-						mag2_sum += mag2;
-						sample_count++;
-						if (sample_count >= RX_BIT_SAMPLES) {
-							const uint32_t mag2_avg = mag2_sum / RX_BIT_SAMPLES;
-							noise_floor = (noise_floor * 15 + mag2_avg) >> 4;
-							const uint32_t adaptive_threshold = noise_floor + RX_THRESHOLD_MARGIN;
-							bool current_bit;
-							current_bit = (mag2_avg > adaptive_threshold);
-							// High-precision bit decision
-							bit_buffer[bit_buffer_index] = current_bit;
-							bit_buffer_index++;
-							sample_count = 0;
-							mag2_sum = 0;
-						}
-					break;
-				}
-
-
-
-				if (bit_buffer_index >= RX_BIT_PACKET_SIZE_DEBUG) {
-				memcpy(tx_buffer, bit_buffer, RX_BIT_PACKET_SIZE_DEBUG);
-				usb_transfer_schedule_block(
-					&usb_endpoint_bulk_in,
-					tx_buffer,
-					RX_BIT_PACKET_SIZE_DEBUG,
-					transceiver_bulk_transfer_complete,
-					NULL);
-				while (!usb_endpoint_bulk_in.transfer_complete) {
-					__asm__("nop");
-				}
-				bit_buffer_index = 0;
-			}
-
-			}
-
-		uint32_t elapsed = SAFE_DWT_CYCCNT - start_time; // Cycles passes to compute BATCH_SAMPLE_SIZE = 256 samples != bits	
-		//bit_buffer[bit_buffer_index++] = elapsed;
-		consume_count += BATCH_SAMPLE_SIZE;
-		m0_state.m4_count += BATCH_SAMPLE_SIZE;
-		}
-	}
-	transceiver_shutdown();
-}
-#endif
-
-#ifndef CUSTOM_TX_MODE
-void tx_mode(uint32_t seq)
-{
-	unsigned int usb_count = 0;
-	bool started = false;
-
-	transceiver_startup(TRANSCEIVER_MODE_TX);
-
-	// Set up OUT transfer of buffer 0.
-	usb_transfer_schedule_block(
-		&usb_endpoint_bulk_out,
-		&usb_bulk_buffer[0x0000],
-		USB_TRANSFER_SIZE,
-		transceiver_bulk_transfer_complete,
-		NULL);
-	usb_count += USB_TRANSFER_SIZE;
-
-	while (transceiver_request.seq == seq) {
-		if (!started && (m0_state.m4_count == USB_BULK_BUFFER_SIZE)) {
-			// Buffer is now full, start streaming.
-			baseband_streaming_enable(&sgpio_config);
-			started = true;
-		}
-		if ((usb_count - m0_state.m0_count) <= USB_TRANSFER_SIZE) {
-			usb_transfer_schedule_block(
-				&usb_endpoint_bulk_out,
-				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
-				USB_TRANSFER_SIZE,
-				transceiver_bulk_transfer_complete,
-				NULL);
-			usb_count += USB_TRANSFER_SIZE;
-		}
-	}
-
-	transceiver_shutdown();
-}
-#else
-
-void tx_mode(uint32_t seq)
-{
-	uart_printf("tx mode");
-	init_sine_table();
-	if (tx_bit_pattern_len == 0) {
-		uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF};
-
-		mac_build_frame(
-			0x02,              // RX (destination)
-			0x01,              // next TX (token)
-			payload,
-			sizeof(payload)
-		);
-	
-		uint32_t len;
-		uint8_t* bits = mac_get_tx_bits(&len);
-	
-		tx_set_bit_pattern(bits, len);
-	}
-
-	// Radio configuration
-	#ifdef TX_SAMPLE_RATE
-	set_sample_rate(TX_SAMPLE_RATE);
-	#endif
-	#ifdef TX_BASEBAND_FILTER_BW
-	set_baseband_filter_bandwidth(TX_BASEBAND_FILTER_BW);
-	#endif
-	#ifdef CENTRE_FREQ
-	set_centre_frequency(CENTRE_FREQ);
-	#endif
-	#ifdef TX_RF_GAIN
-	tx_set_rf_gain(TX_RF_GAIN);
-	#endif
-	#ifdef TX_IF_GAIN
-	tx_set_if_gain(TX_IF_GAIN);
-	#endif
-	#ifdef TX_ANTENNA_ENABLE
-	set_antenna_enable(TX_ANTENNA_ENABLE);
-	#endif
-
-	// Start transceiver once (puts M0 into TX_START, waiting for SGPIO)
-	transceiver_startup(TRANSCEIVER_MODE_TX);
-
-	static uint32_t phase = 0; // Phase tracking for waveform continuity
-	uint32_t usb_count = 0;
-
-	baseband_streaming_enable(&sgpio_config);
-
-	while (1) {
-		// Top off all available space each pass to maximize producer headroom.
-		while ((usb_count - m0_state.m0_count) <=
-		       USB_BULK_BUFFER_SIZE - USB_TRANSFER_SIZE) {
-			fill_data_buffer(
-				&usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
-				USB_TRANSFER_SIZE,
-				&phase);
-
-			// M4 publishes produced bytes; M0 advances m0_count as it consumes.
-			m0_state.m4_count += USB_TRANSFER_SIZE;
-			usb_count += USB_TRANSFER_SIZE;
-		}
-	}
-
-	transceiver_shutdown();
-}
-#endif
-
 void off_mode(uint32_t seq)
 {
 	hackrf_ui()->set_transceiver_mode(TRANSCEIVER_MODE_OFF);
@@ -1074,30 +641,26 @@ void off_mode(uint32_t seq)
 	while (transceiver_request.seq == seq) {}
 }
 
-
-
-
-
-
 void phy_tx_step(packet_t* pkt_out, uint8_t dst)
 {
 
     init_sine_table();
-
     // === Build MAC frame (BYTE STREAM, not bit stream) ===
     if (tx_data_ptr == NULL){
 
         mac_build_frame(
             dst,
-            mac_device_id + 1 % N,
+            (mac_device_id + 1) % N,
             pkt_out->len,
             pkt_out->data
         );
 
         // IMPORTANT:
         // Instead of expanding to bits, we only store byte stream info
+		
         tx_data_ptr = mac_get_tx_data(&tx_data_len); 
-        // tx_data_ptr should point to raw bytes (NOT bits)
+  
+		// tx_data_ptr should point to raw bytes (NOT bits)
     }
 
     // === Radio config ===
@@ -1131,13 +694,14 @@ void phy_tx_step(packet_t* pkt_out, uint8_t dst)
     const uint32_t total_samples = tx_data_len * 8 * TX_BIT_SAMPLES;
 
     uint32_t samples_sent = 0;
+	bool done = false;
 
-    while (samples_sent < total_samples) {
-
+    while (!done && samples_sent < total_samples) {
+	//while(1){
         if ((usb_count - m0_state.m0_count) <=
             USB_BULK_BUFFER_SIZE - USB_TRANSFER_SIZE) {
 
-            fill_data_buffer(
+            done = fill_data_buffer(
                 &usb_bulk_buffer[usb_count & USB_BULK_BUFFER_MASK],
                 USB_TRANSFER_SIZE,
                 &phase
@@ -1146,123 +710,118 @@ void phy_tx_step(packet_t* pkt_out, uint8_t dst)
             m0_state.m4_count += USB_TRANSFER_SIZE;
             usb_count += USB_TRANSFER_SIZE;
 
-            samples_sent += USB_TRANSFER_SIZE;
+            samples_sent += USB_TRANSFER_SIZE / 2; // 2 bytes per sample
         }
     }
 
-    transceiver_shutdown();
+	while (m0_state.m0_count < usb_count) {
+		// spin or optionally sleep
+	}
 
-    uart_printf("TX done\n");
+
+    //transceiver_shutdown();
+
+	
 }
 
 
 
-bool phy_rx_step(packet_t* pkt_in, mac_frame_t* frame){
-// Enable the cycle counter using our "Safe" names
-SAFE_DEMCR |= SAFE_TRCENA;
-SAFE_DWT_CYCCNT = 0; 
-SAFE_DWT_CONTROL |= SAFE_CYCCNTENA;
+bool phy_rx_step(packet_t* pkt_in, mac_frame_t* frame)
+{
+	#ifdef RX_SAMPLE_RATE
+	set_sample_rate(RX_SAMPLE_RATE);
+	#endif
+	#ifdef RX_BASEBAND_FILTER_BW
+	set_baseband_filter_bandwidth(RX_BASEBAND_FILTER_BW);
+	#endif
+	#ifdef CENTRE_FREQ
+	set_centre_frequency(CENTRE_FREQ);
+	#endif
+	#ifdef RX_RF_GAIN
+	rx_set_rf_gain(RX_RF_GAIN);
+	#endif
+	#ifdef RX_IF_GAIN
+	rx_set_if_gain(RX_IF_GAIN);
+	#endif
+	#ifdef RX_BB_GAIN
+	rx_set_bb_gain(RX_BB_GAIN);
+	#endif
+	#ifdef RX_ANTENNA_ENABLE
+	set_antenna_enable(RX_ANTENNA_ENABLE);
+	#endif
+
+	uint32_t consume_count = 0;
+	transceiver_startup(TRANSCEIVER_MODE_RX);
+	baseband_streaming_enable(&sgpio_config);
+
+	// Constants matching the transmitter
+	uint32_t sample_count = 0;
+	uint64_t mag2_sum = 0; // Sum of magnitude squared
+	bool current_bit = false;
+	uint8_t bit_buffer[RX_BIT_PACKET_SIZE_DEBUG]; // Buffer to store detected bits
+	uint32_t bit_buffer_index = 0;
+	uint8_t tx_buffer[RX_BIT_PACKET_SIZE_DEBUG]; // Separate buffer for USB transfers
+	uint32_t noise_floor = 0;
+
+	// Variables for samples window alignment
+	uint32_t mag2_window[WINDOW];
+	uint32_t window_index = 0;
+    bool synced = false;
+	
+	uint8_t preamble_shift = 0;
+
+	uint32_t circular_buffer = 0;
+	uint32_t synchronization_counter = 0;
+
+	// State Machine 
+	typedef enum {
+		STATE_IDLE,        // Looking for 10101010 pattern
+		STATE_REFINE_SYNC, // Pattern found, now finding the exact peak
+		STATE_LOCKED       // Synchronized, reading data bits
+	} rx_state_t;
+
+	rx_state_t state = STATE_IDLE;
+	uint8_t pattern_shift = 0;
+	uint32_t sample_in_bit_counter = 0;
+
+	// Integration variables
+	uint64_t sliding_sum = 0;
+	uint32_t window_buffer[RX_BIT_SAMPLES]; // 1000 samples
+	uint32_t window_ptr = 0;
+	uint64_t max_energy_found = 0;
+	uint32_t samples_since_max = 0;
+	uint32_t energy_window[RX_BIT_SAMPLES] = {0}; // RX_BIT_SAMPLES samples
 
 
-#ifdef RX_SAMPLE_RATE
-set_sample_rate(RX_SAMPLE_RATE);
-#endif
-#ifdef RX_BASEBAND_FILTER_BW
-set_baseband_filter_bandwidth(RX_BASEBAND_FILTER_BW);
-#endif
-#ifdef CENTRE_FREQ
-set_centre_frequency(CENTRE_FREQ);
-#endif
-#ifdef RX_RF_GAIN
-rx_set_rf_gain(RX_RF_GAIN);
-#endif
-#ifdef RX_IF_GAIN
-rx_set_if_gain(RX_IF_GAIN);
-#endif
-#ifdef RX_BB_GAIN
-rx_set_bb_gain(RX_BB_GAIN);
-#endif
-#ifdef RX_ANTENNA_ENABLE
-set_antenna_enable(RX_ANTENNA_ENABLE);
-#endif
+	uint32_t sample_count_A = 0;
+	uint32_t mag2_sum_A = 0;
+	uint8_t preamble_window_detector_A = 0;
+	uint32_t noise_floor_A = 0;
 
-uint32_t consume_count = 0;
-transceiver_startup(TRANSCEIVER_MODE_RX);
-baseband_streaming_enable(&sgpio_config);
+	uint8_t first_word = 0;
+	bool synchronized = false;
+	bool data_received = true;
+	uint8_t bit_count = 0;
+	uint8_t byte_acc = 0;
+	bool packet_sent = false;
 
-// Constants matching the transmitter
-uint32_t sample_count = 0;
-uint32_t mag2_sum = 0;
-uint8_t preamble_window_detector = 0;
-uint32_t noise_floor = 0;
+	while (data_received) {
+		if ((m0_state.m0_count - consume_count) >= BATCH_SAMPLE_SIZE) {
+			uint8_t* buffer = &usb_bulk_buffer[consume_count & USB_BULK_BUFFER_MASK];
 
-uint32_t sample_count_A = 0;
-uint32_t mag2_sum_A = 0;
-uint8_t preamble_window_detector_A = 0;
-uint32_t noise_floor_A = 0;
+			// Variables for the Sample-Level Edge Tracker
+			uint32_t samples_in_current_state = 0;
+			bool last_sample_hi = false;
+			uint8_t bits_detected = 0;
+			uint8_t preamble_window_detector = 0;
 
-bool current_bit = false;
-//To transmit numbers instead of bits for debugging
-//uint32_t bit_buffer[RX_BIT_PACKET_SIZE_DEBUG]; // Buffer to store detected bits
-//uint32_t bit_buffer_index = 0;
-//uint32_t tx_buffer[RX_BIT_PACKET_SIZE_DEBUG]; // Separate buffer for USB transfers
-
-// Original to transmit bits
-//uint8_t bit_buffer[RX_BIT_PACKET_SIZE_DEBUG]; // Buffer to store detected bits
-uint16_t bit_buffer_index = 0;
-//uint8_t tx_buffer[RX_BIT_PACKET_SIZE_DEBUG]; // Separate buffer for USB transfers
-
-
-
-uint16_t circular_buffer = 0;
-uint32_t synchronization_counter = 0;
-
-// State Machine 
-typedef enum {
-	STATE_IDLE,        // Looking for 10101010 pattern
-	STATE_REFINE_SYNC, // Pattern found, now finding the exact peak
-	STATE_LOCKED       // Synchronized, reading data bits
-} rx_state_t;
-
-rx_state_t state = STATE_IDLE;
-uint8_t pattern_shift = 0;
-uint32_t sample_in_bit_counter = 0;
-
-// Integration variables
-uint64_t sliding_sum = 0;
-uint64_t max_energy_found = 0;
-uint32_t samples_since_max = 0;
-
-
-static uint32_t energy_window[RX_BIT_SAMPLES] = {0}; // RX_BIT_SAMPLES samples
-// Force the buffer into the general RAM area, away from the Stack
-static uint8_t bit_buffer[RX_BIT_PACKET_SIZE_DEBUG] __attribute__((section(".data")));
-static uint8_t tx_buffer[RX_BIT_PACKET_SIZE_DEBUG] __attribute__((section(".data")));
-
-static uint8_t first_word = 0;
-static bool synchronized = false;
-bool data_received = false;
-
-static uint8_t byte_acc = 0;
-static uint8_t bit_count = 0;
-
-while (!data_received) {
-	if ((m0_state.m0_count - consume_count) >= BATCH_SAMPLE_SIZE) {
-		uint8_t* buffer = &usb_bulk_buffer[consume_count & USB_BULK_BUFFER_MASK];
-
-
-		uint32_t start_time = SAFE_DWT_CYCCNT; // Start timer
-
-
-		for (uint32_t i = 0; i < BATCH_SAMPLE_SIZE; i += 2) {
-			int32_t I = (int8_t) buffer[i];
-			int32_t Q = (int8_t) buffer[i + 1];
-			uint32_t mag2 = I * I + Q * Q;
-		
+			for (uint32_t i = 0; i < BATCH_SAMPLE_SIZE; i += 2) {
+				int32_t I = (int8_t) buffer[i];
+				int32_t Q = (int8_t) buffer[i + 1];
+				uint32_t mag2 = I * I + Q * Q;
 			
-			switch (state) {
-				
-				case STATE_IDLE:
+				switch (state) {
+					case STATE_IDLE:
 					mag2_sum_A += mag2;
 					sample_count_A++;
 
@@ -1339,6 +898,8 @@ while (!data_received) {
 						if((first_word == 0x99) && (synchronized == true)){
 							state = STATE_LOCKED;
 							bit_buffer_index = 0;
+							bit_count = 0;
+							byte_acc = 0;
 						}
 
 
@@ -1368,61 +929,63 @@ while (!data_received) {
 						bool current_bit;
 						current_bit = (mag2_avg > adaptive_threshold);
 						
-						// Accumulate to bytes here, so it calls the MAC protocol less often which improves performance
+						
 						byte_acc = (byte_acc << 1) | current_bit;
 						bit_count++;
-						if (bit_count == 8) {
+ 						if (bit_count == 8) {
 
-							if (mac_process_byte(byte_acc, &frame)) {
-								data_received = true;
+							// High-precision bit decision
+							bit_buffer[bit_buffer_index] = byte_acc;
+							bit_buffer_index++;
+
+ 							if (mac_process_byte(byte_acc, frame)) {
+								//data_received = false;
 								//return true; // frame complete
+								//bit_buffer[bit_buffer_index] = (uint8_t) frame->payload_size;
+								//bit_buffer_index++;
 							}
-						
+
+
 							bit_count = 0;
 							byte_acc = 0;
-						}
 
-						// High-precision bit decision
-						bit_buffer[bit_buffer_index] = current_bit;
-						bit_buffer_index++;
+						}
+					
+
 						sample_count = 0;
 						mag2_sum = 0;
 					}
 				break;
 			}
 
+				if (bit_buffer_index == RX_BIT_PACKET_SIZE_DEBUG) {
+				memcpy(tx_buffer, bit_buffer, RX_BIT_PACKET_SIZE_DEBUG);
+				usb_transfer_schedule_block(
+					&usb_endpoint_bulk_in,
+					tx_buffer,
+					RX_BIT_PACKET_SIZE_DEBUG,
+					transceiver_bulk_transfer_complete,
+					NULL);
 
+				while (!usb_endpoint_bulk_in.transfer_complete) {
+					__asm__("nop");
+				}
 
-			if (bit_buffer_index >= RX_BIT_PACKET_SIZE_DEBUG) {
-			memcpy(tx_buffer, bit_buffer, RX_BIT_PACKET_SIZE_DEBUG);
-			usb_transfer_schedule_block(
-				&usb_endpoint_bulk_in,
-				tx_buffer,
-				RX_BIT_PACKET_SIZE_DEBUG,
-				transceiver_bulk_transfer_complete,
-				NULL);
-			while (!usb_endpoint_bulk_in.transfer_complete) {
-				__asm__("nop");
+				bit_buffer_index = 0;
+				//data_received = false;
 			}
-			bit_buffer_index = 0;
+			}
+		consume_count += BATCH_SAMPLE_SIZE;
+		m0_state.m4_count += BATCH_SAMPLE_SIZE;
 		}
-
-		}
-
-	uint32_t elapsed = SAFE_DWT_CYCCNT - start_time; // Cycles passes to compute BATCH_SAMPLE_SIZE = 256 samples != bits	
-	//bit_buffer[bit_buffer_index++] = elapsed;
-	consume_count += BATCH_SAMPLE_SIZE;
-	m0_state.m4_count += BATCH_SAMPLE_SIZE;
 	}
-}
-
-transceiver_shutdown();
-
-if(pkt_in->data[2] == mac_device_id){
-	return true;
-}
-else{
-	return false;
-}
+	
+	//transceiver_shutdown();
+	if(pkt_in->data[2] == mac_device_id){
+		return true;
+	}
+	else{
+		return false;
+	}
 }
 

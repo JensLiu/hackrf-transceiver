@@ -29,14 +29,14 @@ typedef struct {
 // Build a frame and prepare internal bit buffer
 void mac_build_frame(uint8_t rx,
                      uint8_t next_tx,
-                     uint8_t payload_size,
+                     uint32_t payload_size,
                      uint8_t* payload
                      );
 
 // Get pointer to bitstream for PHY transmission
 bool* mac_get_tx_bits(uint32_t* len);
 
-bool* mac_get_tx_data(uint32_t* len);
+uint8_t* mac_get_tx_data(uint32_t* len);
 
 // ================= RX API =================
 
