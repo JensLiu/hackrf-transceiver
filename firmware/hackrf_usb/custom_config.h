@@ -15,8 +15,8 @@ static uint8_t shift_reg = 0;
 #define NUM_TX_BUFFERS 1
 #define TX_BUFFER_SIZE (sizeof(uint8_t) * 256)
 
-#define PREAMBLE_TIMEOUT_MS 20
-#define PREAMBLE_TIMEOUT_SAMPLES ((RX_SAMPLE_RATE * PREAMBLE_TIMEOUT_MS) / 1000)
+#define PREAMBLE_TIMEOUT_MS 2
+#define PREAMBLE_TIMEOUT_SAMPLES ((RX_SAMPLE_RATE * PREAMBLE_TIMEOUT_MS) >> 10) // / 1024 to work in bits, so it is not triggered every sample
 
 static uint64_t best_energy = 0;
 static uint32_t best_offset = 0;
@@ -86,11 +86,11 @@ static uint32_t current_offset = 0;
 // ================= CONFIG =================
 
 // Device ID (change per node)
-static const uint8_t mac_device_id = 0x01;
+static const uint8_t mac_device_id = 0x00;
 
 // ================= MAC-PROTOCOL =================
 #define MAC_HEADER_SIZE      (14+1+1+1+3)      // preamble, TX, RX, nextTX, payloadsize (in Bytes)
-#define MAC_MAX_PAYLOAD      (1024) // MAX Bytes of data
+#define MAC_MAX_PAYLOAD      (256) // MAX Bytes of data
 #define MAC_MAX_FRAME_SIZE   (MAC_HEADER_SIZE + MAC_MAX_PAYLOAD) // in Bytes
 #define MAC_MAX_FRAME_SIZE_BITS         (MAC_MAX_FRAME_SIZE*8) // in BITS
 

@@ -376,25 +376,29 @@ int main(void)
 	} radio_state_t;
 	
 	static radio_state_t state = STATE_RX;
-	bool next_tx = false;
+	bool RX_data = false;
 	state = STATE_RX;
 	if (mac_device_id == 0) {
 		state = STATE_TX;   // ring starter
+		led_off(LED2);
+		led_on(LED3);
 	} else {
 		state = STATE_RX;   // everyone else listens
+		led_on(LED2);
+		led_off(LED3);
 	}
 	bool stop = false;
 
 	packet_t pkt_in = {0};
 	packet_t pkt_out = {0};
 	mac_frame_t frame = {0};
-	uint8_t dst = 0x02;
+	uint8_t dst = (mac_device_id + 1) % N;
 	uint8_t custom_data[] = CUSTOM_BYTE_PATTERN;
 
 	memcpy(pkt_out.data, custom_data, sizeof(custom_data));
 	pkt_out.len = sizeof(custom_data);
-
-
+	bool resend = false;
+	bool last_sender = false;
 
 	while (1) {
 
@@ -413,11 +417,18 @@ int main(void)
 
 		switch (state) {
 			case STATE_RX:
-				next_tx = phy_rx_step(&pkt_in, &frame);
-				stop = true;
+				RX_data = phy_rx_step(&pkt_in, &frame); // return values: false = nothing receive, timout ; true = data received
+				if(RX_data == false && last_sender == true){
+					phy_tx_step(&pkt_out, dst);
+					last_sender = true;
+				}
+				if(RX_data == true){ // If you receive something, it means that you were not the last sender anymore
+					last_sender = false;
+				}
 				break;
 			case STATE_TX:
 				phy_tx_step(&pkt_out, dst);
+				last_sender = true;
 				break;
 
 			#ifndef PRALINE
@@ -430,15 +441,13 @@ int main(void)
 		
 	}
 
-/* 
-	// Final state machine for TX logic
-	if(next_tx == true){
+	if(RX_data == true){
+		RX_data = false;
 		state = STATE_TX;
-	}
-	else{
+		}
+		else{
 		state = STATE_RX;
 	}
- */
 }
 
 return 0;

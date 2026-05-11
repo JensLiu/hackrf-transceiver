@@ -163,26 +163,28 @@ bool mac_process_byte(uint8_t byte, mac_frame_t* out_frame)
 {
     mac_rx_bytes[mac_rx_byte_index++] = byte;
 
-    // Wait until full header (6 bytes)
+    // Wait until full header (6 bytes, without preamble)
     if (mac_rx_byte_index == 6) {
+        out_frame->tx = mac_rx_bytes[0];
+        out_frame->rx = mac_rx_bytes[1];
+        out_frame->next_tx = mac_rx_bytes[2];
 
         payload_size =
             ((uint32_t)mac_rx_bytes[3] << 16) |
             ((uint32_t)mac_rx_bytes[4] << 8)  |
             ((uint32_t)mac_rx_bytes[5]);
-
+            
+        out_frame->payload_size = payload_size;
         // Safety check (VERY important)
         if (payload_size > MAC_MAX_PAYLOAD) {
             mac_reset_rx();  // invalid frame
             return false;
         }
+
     }
     if (mac_rx_byte_index == (6 + payload_size)) {
 
-        out_frame->tx = mac_rx_bytes[0];
-        out_frame->rx = mac_rx_bytes[1];
-        out_frame->next_tx = mac_rx_bytes[2];
-        out_frame->payload_size = payload_size;
+
 
         memcpy(out_frame->payload,
                &mac_rx_bytes[6],

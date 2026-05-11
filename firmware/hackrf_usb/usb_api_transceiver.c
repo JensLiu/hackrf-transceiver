@@ -536,14 +536,14 @@ void transceiver_startup(const transceiver_mode_t mode)
 	switch (mode) {
 	case TRANSCEIVER_MODE_RX_SWEEP:
 	case TRANSCEIVER_MODE_RX:
-		led_off(LED3);
-		led_on(LED2);
+		//led_off(LED3);
+		//led_on(LED2);
 		m0_set_mode(M0_MODE_RX);
 		m0_state.shortfall_limit = _rx_overrun_limit;
 		break;
 	case TRANSCEIVER_MODE_TX:
-		led_off(LED2);
-		led_on(LED3);
+		//led_off(LED2);
+		//led_on(LED3);
 		m0_set_mode(M0_MODE_TX_START);
 		m0_state.shortfall_limit = _tx_underrun_limit;
 		break;
@@ -698,6 +698,10 @@ void phy_tx_step(packet_t* pkt_out, uint8_t dst)
 
 
     baseband_streaming_enable(&sgpio_config);
+	led_off(LED2);
+	led_on(LED3);
+
+	//delay(20000000); // add a delay to see the transition between tx and rx on the LED of the hackrf one
 
     // === STREAMING MODE (NO PRECOMPUTED BITS) ===
     const uint32_t total_samples = tx_data_len * 8 * TX_BIT_SAMPLES;
@@ -709,8 +713,8 @@ void phy_tx_step(packet_t* pkt_out, uint8_t dst)
 
 		done = false;
 		samples_sent=0;
+		
 		while (!done && samples_sent < total_samples) {
-		//while(1){
 			if ((usb_count - m0_state.m0_count) <=
 				USB_BULK_BUFFER_SIZE - USB_TRANSFER_SIZE) {
 
@@ -733,7 +737,7 @@ void phy_tx_step(packet_t* pkt_out, uint8_t dst)
 
 
 	tx_stream_reset();
-	while(1);
+	//while(1);
     transceiver_shutdown();
 
 }
@@ -742,6 +746,9 @@ void phy_tx_step(packet_t* pkt_out, uint8_t dst)
 
 bool phy_rx_step(packet_t* pkt_in, mac_frame_t* frame)
 {
+
+
+
 	#ifdef RX_SAMPLE_RATE
 	set_sample_rate(RX_SAMPLE_RATE);
 	#endif
@@ -804,8 +811,9 @@ bool phy_rx_step(packet_t* pkt_in, mac_frame_t* frame)
 	static bool samples_dropped = false;
 	static uint32_t max_backlog = 0;
 	static uint32_t total_iq_samples = 0;
-
-
+	led_on(LED2);
+	led_off(LED3);
+	uint32_t waiting_for_preamble_since = 0;
 	while (data_received) {
 
 
@@ -864,6 +872,12 @@ bool phy_rx_step(packet_t* pkt_in, mac_frame_t* frame)
 						synchronized = false;
 						break;
 						} 
+
+						waiting_for_preamble_since++;
+						if(5000 < waiting_for_preamble_since)
+						{
+							return false;   // no preamble arrived in time
+						}
 
 					}
 				break;
@@ -967,8 +981,9 @@ bool phy_rx_step(packet_t* pkt_in, mac_frame_t* frame)
 		
 
 	}
-	for(int i =0;i<sizeof(bit_buffer);i){
-		memcpy(tx_buffer, &bit_buffer[i], RX_BIT_PACKET_SIZE_DEBUG);
+
+/* 	for(uint32_t i =0 ; i < frame->payload_size ; i){
+		memcpy(tx_buffer, &frame->payload[i], RX_BIT_PACKET_SIZE_DEBUG);
 				usb_transfer_schedule_block(
 					&usb_endpoint_bulk_in,
 					tx_buffer,
@@ -979,16 +994,18 @@ bool phy_rx_step(packet_t* pkt_in, mac_frame_t* frame)
 					__asm__("nop");
 					}
 				i+=RX_BIT_PACKET_SIZE_DEBUG;
-	}
+	} */
 
-	while(1);
 
-	if(pkt_in->data[2] == mac_device_id){
+
+	if(frame->next_tx == mac_device_id){
 		return true;
+
 	}
 	else{
 		return false;
 	}
+
 	transceiver_shutdown();
 }
 
