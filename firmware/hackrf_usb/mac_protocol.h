@@ -9,7 +9,7 @@
 
 // ================= MAC LIMITS =================
 
-#define MAC_HEADER_SIZE            (3 + 1 + 1 + 1 + 3)   // bytes
+#define MAC_HEADER_SIZE            (14 + 1 + 1 + 1 + 3)   // bytes
 #define MAC_MAX_PAYLOAD            (256)                 // bytes
 #define MAC_MAX_FRAME_SIZE         (MAC_HEADER_SIZE + MAC_MAX_PAYLOAD)
 #define MAC_MAX_FRAME_SIZE_BITS    (MAC_MAX_FRAME_SIZE * 8)

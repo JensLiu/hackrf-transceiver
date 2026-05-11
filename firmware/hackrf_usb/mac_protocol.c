@@ -23,6 +23,8 @@ static uint32_t mac_rx_byte_index = 0;
 static uint8_t mac_rx_bit_accumulator = 0;
 static uint8_t mac_rx_bit_count = 0;
 
+uint32_t payload_size = 0;
+
 // ================= UTIL =================
 
 // Convert byte → bits (MSB first)
@@ -96,7 +98,7 @@ void mac_build_frame(uint8_t rx,
     byte_to_bits((payload_size)       & 0xFF, mac_tx_bits, &mac_tx_bits_len);
 
     // 3. Payload
-    for (uint8_t i = 0; i < payload_size; i++) {
+    for (uint32_t i = 0; i < payload_size; i++) {
         byte_to_bits(payload[i], mac_tx_bits, &mac_tx_bits_len);
     }
 
@@ -117,7 +119,7 @@ void mac_reset_rx(void)
 
 }
 
-// Call this for EVERY decoded bit from your RX
+/* // Call this for EVERY decoded bit from your RX
 bool mac_process_bit(uint8_t bit, mac_frame_t* out_frame)
 {
     // Accumulate bits into byte
@@ -155,14 +157,15 @@ bool mac_process_bit(uint8_t bit, mac_frame_t* out_frame)
 
     return false;
 }
+ */
 
 bool mac_process_byte(uint8_t byte, mac_frame_t* out_frame)
 {
     mac_rx_bytes[mac_rx_byte_index++] = byte;
 
     // Wait until full header (6 bytes)
-    if (mac_rx_byte_index >= 6) {
-        uint32_t payload_size = 0;
+    if (mac_rx_byte_index == 6) {
+
         payload_size =
             ((uint32_t)mac_rx_bytes[3] << 16) |
             ((uint32_t)mac_rx_bytes[4] << 8)  |
@@ -173,21 +176,20 @@ bool mac_process_byte(uint8_t byte, mac_frame_t* out_frame)
             mac_reset_rx();  // invalid frame
             return false;
         }
+    }
+    if (mac_rx_byte_index == (6 + payload_size)) {
 
-        if (mac_rx_byte_index >= (6 + payload_size)) {
+        out_frame->tx = mac_rx_bytes[0];
+        out_frame->rx = mac_rx_bytes[1];
+        out_frame->next_tx = mac_rx_bytes[2];
+        out_frame->payload_size = payload_size;
 
-            out_frame->tx = mac_rx_bytes[0];
-            out_frame->rx = mac_rx_bytes[1];
-            out_frame->next_tx = mac_rx_bytes[2];
-            out_frame->payload_size = payload_size;
+        memcpy(out_frame->payload,
+               &mac_rx_bytes[6],
+               payload_size);
 
-            memcpy(out_frame->payload,
-                   &mac_rx_bytes[6],
-                   payload_size);
-
-            mac_reset_rx();
-            return true;
-        }
+        mac_reset_rx();
+        return true;
     }
 
     return false;
